@@ -1,0 +1,469 @@
+{
+  "_comment": "Curated map of normalized platform display names -> Twitch category names, for known mismatches (regional titles, 'GOTY Edition' naming, mod launchers) and for the creative/dev apps the install index surfaces. CategoryResolver tier 2 (DESIGN.md 1.5), loaded via CategoryResolver::loadAliasTable(), which normalizes both these keys and the game's own display name the same way (strip (tm)/(r)/(c), collapse whitespace, casefold) before comparing, so key casing here does not matter. TWO VALUE SHAPES. A plain string means 'switch to this category automatically', the same as it always did. An object with \"prompt\": true means OFFER it and never apply it on its own - the plugin raises the creative-app prompt instead (DetectionStateMachine PromptKind::CreativeApp). Every creative and dev app here is prompt-only on purpose: having Photoshop or VS Code open is not evidence that someone is streaming it, and is very often just a window left open from earlier. Auto-switching there would be the single most annoying thing this plugin could do, and it is also the case where asking costs nothing, because the app is not going anywhere. Real games that merely need renaming should use the plain string form. Community PRs against this file are the 'actually maintained' promise made concrete; see README.md and DESIGN.md Section 8.",
+  "aliases": {
+    "Ableton Live*": {
+      "category": "Music",
+      "prompt": true
+    },
+    "Adobe After Effects*": {
+      "category": "Art",
+      "prompt": true
+    },
+    "Adobe Animate*": {
+      "category": "Art",
+      "prompt": true
+    },
+    "Adobe Audition*": {
+      "category": "Music",
+      "prompt": true
+    },
+    "Adobe Character Animator*": {
+      "category": "Art",
+      "prompt": true
+    },
+    "Adobe Fresco*": {
+      "category": "Art",
+      "prompt": true
+    },
+    "Adobe Illustrator*": {
+      "category": "Art",
+      "prompt": true
+    },
+    "Adobe InDesign*": {
+      "category": "Art",
+      "prompt": true
+    },
+    "Adobe Lightroom Classic*": {
+      "category": "Art",
+      "prompt": true
+    },
+    "Adobe Lightroom*": {
+      "category": "Art",
+      "prompt": true
+    },
+    "Adobe Media Encoder*": {
+      "category": "Art",
+      "prompt": true
+    },
+    "Adobe Photoshop*": {
+      "category": "Art",
+      "prompt": true
+    },
+    "Adobe Premiere Pro*": {
+      "category": "Art",
+      "prompt": true
+    },
+    "Adobe Substance 3D Designer*": {
+      "category": "Art",
+      "prompt": true
+    },
+    "Adobe Substance 3D Painter*": {
+      "category": "Art",
+      "prompt": true
+    },
+    "Adobe Substance 3D Sampler*": {
+      "category": "Art",
+      "prompt": true
+    },
+    "Adobe Substance 3D Stager*": {
+      "category": "Art",
+      "prompt": true
+    },
+    "Affinity Designer*": {
+      "category": "Art",
+      "prompt": true
+    },
+    "Affinity Photo*": {
+      "category": "Art",
+      "prompt": true
+    },
+    "Affinity Publisher*": {
+      "category": "Art",
+      "prompt": true
+    },
+    "Android Studio": {
+      "category": "Software and Game Development",
+      "prompt": true
+    },
+    "Ardour": {
+      "category": "Music",
+      "prompt": true
+    },
+    "Aseprite": {
+      "category": "Art",
+      "prompt": true
+    },
+    "Audacity": {
+      "category": "Music",
+      "prompt": true
+    },
+    "Autodesk 3ds Max*": {
+      "category": "Art",
+      "prompt": true
+    },
+    "Autodesk Fusion*": {
+      "category": "Makers & Crafting",
+      "prompt": true
+    },
+    "Autodesk Maya*": {
+      "category": "Art",
+      "prompt": true
+    },
+    "Bambu Studio*": {
+      "category": "Makers & Crafting",
+      "prompt": true
+    },
+    "Bitwig Studio": {
+      "category": "Music",
+      "prompt": true
+    },
+    "Blender*": {
+      "category": "Art",
+      "prompt": true
+    },
+    "Cakewalk": {
+      "category": "Music",
+      "prompt": true
+    },
+    "Camtasia": {
+      "category": "Art",
+      "prompt": true
+    },
+    "Cinema 4D*": {
+      "category": "Art",
+      "prompt": true
+    },
+    "CLion": {
+      "category": "Software and Game Development",
+      "prompt": true
+    },
+    "Clip Studio Paint*": {
+      "category": "Art",
+      "prompt": true
+    },
+    "Construct 3": {
+      "category": "Software and Game Development",
+      "prompt": true
+    },
+    "Corel PaINTER": {
+      "category": "Art",
+      "prompt": true
+    },
+    "CorelDRAW": {
+      "category": "Art",
+      "prompt": true
+    },
+    "Cubase*": {
+      "category": "Music",
+      "prompt": true
+    },
+    "Cursor": {
+      "category": "Software and Game Development",
+      "prompt": true
+    },
+    "DataGrip": {
+      "category": "Software and Game Development",
+      "prompt": true
+    },
+    "DaVinci Resolve*": {
+      "category": "Art",
+      "prompt": true
+    },
+    "Docker Desktop": {
+      "category": "Software and Game Development",
+      "prompt": true
+    },
+    "Eclipse": {
+      "category": "Software and Game Development",
+      "prompt": true
+    },
+    "Emacs": {
+      "category": "Software and Game Development",
+      "prompt": true
+    },
+    "Figma": {
+      "category": "Art",
+      "prompt": true
+    },
+    "Final Cut Pro": {
+      "category": "Art",
+      "prompt": true
+    },
+    "Finale": {
+      "category": "Music",
+      "prompt": true
+    },
+    "FireAlpaca": {
+      "category": "Art",
+      "prompt": true
+    },
+    "FL Studio*": {
+      "category": "Music",
+      "prompt": true
+    },
+    "FreeCAD": {
+      "category": "Makers & Crafting",
+      "prompt": true
+    },
+    "GameMaker*": {
+      "category": "Software and Game Development",
+      "prompt": true
+    },
+    "GIMP": {
+      "category": "Art",
+      "prompt": true
+    },
+    "Godot*": {
+      "category": "Software and Game Development",
+      "prompt": true
+    },
+    "GoLand": {
+      "category": "Software and Game Development",
+      "prompt": true
+    },
+    "Guitar Pro*": {
+      "category": "Music",
+      "prompt": true
+    },
+    "HitFilm": {
+      "category": "Art",
+      "prompt": true
+    },
+    "Inkscape": {
+      "category": "Art",
+      "prompt": true
+    },
+    "IntelliJ IDEA*": {
+      "category": "Software and Game Development",
+      "prompt": true
+    },
+    "JetBrains Rider": {
+      "category": "Software and Game Development",
+      "prompt": true
+    },
+    "Kdenlive": {
+      "category": "Art",
+      "prompt": true
+    },
+    "KiCad": {
+      "category": "Makers & Crafting",
+      "prompt": true
+    },
+    "Krita": {
+      "category": "Art",
+      "prompt": true
+    },
+    "LightBurn": {
+      "category": "Makers & Crafting",
+      "prompt": true
+    },
+    "LMMS": {
+      "category": "Music",
+      "prompt": true
+    },
+    "Logic Pro": {
+      "category": "Music",
+      "prompt": true
+    },
+    "Marmoset Toolbag": {
+      "category": "Art",
+      "prompt": true
+    },
+    "MediBang Paint Pro": {
+      "category": "Art",
+      "prompt": true
+    },
+    "Microsoft Visual Studio*": {
+      "category": "Software and Game Development",
+      "prompt": true
+    },
+    "MuseScore": {
+      "category": "Music",
+      "prompt": true
+    },
+    "Neovim": {
+      "category": "Software and Game Development",
+      "prompt": true
+    },
+    "NetBeans": {
+      "category": "Software and Game Development",
+      "prompt": true
+    },
+    "Nomad Sculpt": {
+      "category": "Art",
+      "prompt": true
+    },
+    "Notepad++": {
+      "category": "Software and Game Development",
+      "prompt": true
+    },
+    "OpenToonz": {
+      "category": "Art",
+      "prompt": true
+    },
+    "OrcaSlicer": {
+      "category": "Makers & Crafting",
+      "prompt": true
+    },
+    "Paint.NET": {
+      "category": "Art",
+      "prompt": true
+    },
+    "PaintTool SAI": {
+      "category": "Art",
+      "prompt": true
+    },
+    "PhpStorm": {
+      "category": "Software and Game Development",
+      "prompt": true
+    },
+    "Pixelmator Pro": {
+      "category": "Art",
+      "prompt": true
+    },
+    "Postman": {
+      "category": "Software and Game Development",
+      "prompt": true
+    },
+    "Pro Tools*": {
+      "category": "Music",
+      "prompt": true
+    },
+    "Procreate": {
+      "category": "Art",
+      "prompt": true
+    },
+    "PrusaSlicer": {
+      "category": "Makers & Crafting",
+      "prompt": true
+    },
+    "PyCharm": {
+      "category": "Software and Game Development",
+      "prompt": true
+    },
+    "Reaper": {
+      "category": "Music",
+      "prompt": true
+    },
+    "REAPER": {
+      "category": "Music",
+      "prompt": true
+    },
+    "Reason": {
+      "category": "Music",
+      "prompt": true
+    },
+    "Rebelle": {
+      "category": "Art",
+      "prompt": true
+    },
+    "rekordbox": {
+      "category": "Music",
+      "prompt": true
+    },
+    "Renoise": {
+      "category": "Music",
+      "prompt": true
+    },
+    "RPG Maker*": {
+      "category": "Software and Game Development",
+      "prompt": true
+    },
+    "RubyMine": {
+      "category": "Software and Game Development",
+      "prompt": true
+    },
+    "Serato DJ*": {
+      "category": "Music",
+      "prompt": true
+    },
+    "Shotcut": {
+      "category": "Art",
+      "prompt": true
+    },
+    "Sibelius": {
+      "category": "Music",
+      "prompt": true
+    },
+    "Sketch": {
+      "category": "Art",
+      "prompt": true
+    },
+    "SketchBook": {
+      "category": "Art",
+      "prompt": true
+    },
+    "SolidWorks": {
+      "category": "Makers & Crafting",
+      "prompt": true
+    },
+    "Studio One*": {
+      "category": "Music",
+      "prompt": true
+    },
+    "Sublime Text": {
+      "category": "Software and Game Development",
+      "prompt": true
+    },
+    "Substance Designer": {
+      "category": "Art",
+      "prompt": true
+    },
+    "Substance Painter": {
+      "category": "Art",
+      "prompt": true
+    },
+    "Tinkercad": {
+      "category": "Makers & Crafting",
+      "prompt": true
+    },
+    "Toon Boom Harmony*": {
+      "category": "Art",
+      "prompt": true
+    },
+    "Traktor Pro": {
+      "category": "Music",
+      "prompt": true
+    },
+    "Ultimaker Cura*": {
+      "category": "Makers & Crafting",
+      "prompt": true
+    },
+    "Unity*": {
+      "category": "Software and Game Development",
+      "prompt": true
+    },
+    "Unreal Engine*": {
+      "category": "Software and Game Development",
+      "prompt": true
+    },
+    "Vegas Pro*": {
+      "category": "Art",
+      "prompt": true
+    },
+    "Vim": {
+      "category": "Software and Game Development",
+      "prompt": true
+    },
+    "Visual Studio Code*": {
+      "category": "Software and Game Development",
+      "prompt": true
+    },
+    "WebStorm": {
+      "category": "Software and Game Development",
+      "prompt": true
+    },
+    "Xcode": {
+      "category": "Software and Game Development",
+      "prompt": true
+    },
+    "ZBrush": {
+      "category": "Art",
+      "prompt": true
+    },
+    "Zed": {
+      "category": "Software and Game Development",
+      "prompt": true
+    }
+  }
+}

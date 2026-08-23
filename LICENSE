@@ -1,0 +1,43 @@
+MIT License
+
+Copyright (c) 2026 TheNerdyBox
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+NOTE ON LICENSING (not final): MIT is the placeholder license while the
+project is young. TheNerdyBox is weighing dual-licensing for this and other
+incorporated/rebranded utilities: permissive for individuals and
+non-commercial use, with a separate commercial license for anyone earning
+from it. Two things to resolve before this note goes away:
+
+1. Whether SignalBox stays permissive (MIT/BSD) or moves to a
+   dual-license model.
+2. Whether linking against libobs - which OBS itself distributes under
+   GPL-2.0-or-later - imposes GPL obligations on the compiled plugin binary
+   regardless of the license on this source tree. OBS's own plugin template
+   defaults to GPL-2.0-or-later for exactly this reason; a number of
+   community plugins ship MIT/BSD anyway on the theory that a runtime-loaded
+   module isn't "linking" in the FSF sense. This project has not taken a
+   position on that theory yet - see THIRD-PARTY-NOTICES.md.
+
+Until resolved, treat MIT as the intent for TheNerdyBox's own original code
+in src/ and data/, not as a settled legal conclusion about the distributed
+binary.
