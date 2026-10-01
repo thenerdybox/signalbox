@@ -18,15 +18,14 @@
  *      could pull input focus away from a fullscreen exclusive game. The
  *      class doc comment upstream (DESIGN.md ADDENDUM) allows "at most a
  *      passive, non-activating toast" as an addition - deliberately not
- *      implemented here; the embedded dock panel alone satisfies the
- *      hard constraint, and adding a second, floating surface would only
- *      add a second place that rule could be violated. If a future
- *      change adds a floating variant, it MUST be constructed with
- *      Qt::ToolTip | Qt::WindowStaysOnTopHint and the
- *      Qt::WA_ShowWithoutActivating widget attribute (Qt's own
- *      documented "notify without activating" combination), and must
- *      never call activateWindow()/raise() in a way that could raise it
- *      above a fullscreen exclusive game.
+ *      implemented HERE: this widget stays a plain panel. The one
+ *      floating surface is PromptToast (ui/PromptToast.h), owned by
+ *      CategoryDock and used only for the no-game-while-live prompt,
+ *      built with exactly the combination this note asks for
+ *      (Qt::WindowStaysOnTopHint, Qt::WindowDoesNotAcceptFocus and
+ *      Qt::WA_ShowWithoutActivating) and never calling
+ *      activateWindow()/raise(). The no-game prompt is also drawn with a
+ *      highlighted border so it is hard to miss in a crowded dock.
  *   2. TIMEOUT TO THE SAFE DEFAULT. No answer within
  *      TimingConstants::promptTimeoutS -> DetectionStateMachine treats it
  *      as "hold the last category", the least destructive outcome
@@ -45,6 +44,12 @@
  *        GameClosed:     "Wait for a new game" -> responded(false, false)
  *                        "Switch to <fallback>" -> responded(true, false)
  *                        "Ignore this change" -> responded(false, checkbox)
+ *        GameClosed (no game while live) has three real answers and so
+ *        does not use responded() at all - it emits noGameResponded():
+ *                        "Stream ending soon" -> StreamEnding
+ *                        "Switch to <fallback>" -> JustChatting
+ *                        "Waiting for a game ..." -> Waiting
+ *        (the older table below still describes the other kinds):
  *        NoGameIdle:     "Set to <fallback>" -> responded(true, false)
  *                        "Wait for a game" -> responded(false, false)
  *                        "Just recording" -> responded(false, true)
@@ -72,6 +77,7 @@
 #include "../core/DetectionStateMachine.h" // PromptKind
 
 QT_BEGIN_NAMESPACE
+class QBoxLayout;
 class QLabel;
 class QPushButton;
 class QCheckBox;
@@ -99,6 +105,10 @@ public:
 	void dismissWithoutResponse();
 
 signals:
+	// The three-way answer to the no-game-while-live prompt
+	// (PromptKind::GameClosed) - see class doc comment #3.
+	void noGameResponded(core::NoGameChoice choice);
+
 	// acceptAction: true for the "do the thing" button (Set to
 	// <game>/Switch to <fallback>), false for the "keep things as they
 	// are" button (Keep <category>/Wait) or "Ignore"/"Don't ask this
@@ -112,6 +122,7 @@ private:
 	void onSecondaryClicked();
 	void onTertiaryClicked();
 
+	QBoxLayout *buttonRow_ = nullptr;
 	core::PromptKind kind_ = core::PromptKind::GoLiveMismatch;
 
 	QLabel *messageLabel_ = nullptr;

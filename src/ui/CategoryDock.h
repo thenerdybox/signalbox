@@ -127,6 +127,7 @@ class TwitchChannelClient;
 namespace signalbox::ui {
 
 class PromptWidget;
+class PromptToast;
 
 class CategoryDock : public QWidget, private core::DetectionStateMachine::Listener {
 	Q_OBJECT
@@ -217,6 +218,7 @@ private:
 	// --- DetectionStateMachine::Listener ---
 	void onSwitchIn(const detection::InstalledGame &game) override;
 	void onApplyFallback() override;
+	void onReapplyCategory(const detection::InstalledGame &game) override;
 	void onPrompt(core::PromptKind kind, const detection::InstalledGame &relevantGame) override;
 	void onAutomationPaused(const std::wstring &reasonForDock) override;
 	void onLogEntry(const std::wstring &message, const std::wstring &previousCategory) override;
@@ -235,8 +237,8 @@ private:
 	static void frontendEventTrampoline(enum obs_frontend_event event, void *privateData);
 	void handleFrontendEvent(enum obs_frontend_event event);
 
-	// One-shot GET /helix/channels at go-live (never a timer - see class
-	// doc comment) feeding DetectionStateMachine::onLiveCategoryKnown(),
+	// One GET /helix/channels at go-live feeding
+	// DetectionStateMachine::onLiveCategoryKnown(),
 	// which is what gives Trigger A (the ADDENDUM's go-live mismatch
 	// prompt - DetectionStateMachine.h calls it the product's "founding
 	// use case") something to compare the first confirmed detection
@@ -250,10 +252,28 @@ private:
 	// One GET /helix/channels, on demand, updating BOTH the state
 	// machine's comparison basis and this dock's own "Live category"
 	// label. Called on connect (attachTwitchClient()) and at go-live.
-	// Never on a timer - see its definition for the no-ambient-polling
-	// note. A failed GET leaves the last known value alone rather than
-	// replacing it with "(unknown)".
-	void syncLiveCategoryFromChannel();
+	// Never on a timer (the scheduled re-checks while live go through
+	// maybeVerifyLiveCategory()). A failed GET leaves the last known
+	// value alone rather than replacing it with "(unknown)".
+	// logAsGoLive: write the result to the OBS log as the go-live read.
+	void syncLiveCategoryFromChannel(bool logAsGoLive = false);
+
+	// Scheduled live-category verification: called from the heartbeat
+	// tick. When the state machine says a slot is due (quick checks after
+	// go-live, then every liveCategoryCheckIntervalS), reads the channel
+	// and hands the result to DetectionStateMachine::onLiveCategoryVerified(),
+	// which decides whether to re-apply the running game's category. At
+	// most one read is ever in flight; a failed or backed-off read is
+	// simply "not verifiable" and waits for the next slot.
+	void maybeVerifyLiveCategory();
+
+	// Common path of onSwitchIn()/onReapplyCategory(): the only-while-live
+	// and "never switch for this app" policy, then the coordinator.
+	void dispatchSwitch(const detection::InstalledGame &game, bool reassert);
+
+	// Brings the dock (and with it the prompt) forward after the
+	// notification card was clicked. User-initiated, so activating is fine.
+	void revealPrompt();
 
 	// Decides which SECTIONS of the dock exist right now, and the Twitch
 	// group's internal widget visibility, from current state. The single
@@ -418,6 +438,8 @@ private:
 	QPushButton *justChattingButton_ = nullptr; // One-click apply of the fallback category.
 	QLabel *streamEndingBanner_ = nullptr;      // Visible only while the hold is on - see refreshStatusLabels().
 	PromptWidget *promptWidget_ = nullptr;
+	std::unique_ptr<PromptToast> toast_; // Parentless always-on-top card - see PromptToast.h.
+	bool liveCheckInFlight_ = false;     // One scheduled verification read at a time.
 	QListWidget *activityLogView_ = nullptr;
 
 	QLabel *twitchStatusLabel_ = nullptr;

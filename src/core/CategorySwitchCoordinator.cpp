@@ -39,7 +39,7 @@ void CategorySwitchCoordinator::log(const std::wstring &message) const
 	}
 }
 
-void CategorySwitchCoordinator::switchIn(const detection::InstalledGame &game, bool live)
+void CategorySwitchCoordinator::switchIn(const detection::InstalledGame &game, bool live, bool reassert)
 {
 	if (!channelClient_) {
 		log(L"Twitch is not connected - couldn't switch to \"" + game.displayName + L"\"");
@@ -50,7 +50,7 @@ void CategorySwitchCoordinator::switchIn(const detection::InstalledGame &game, b
 		return;
 	}
 
-	resolver_.resolve(game, [this, live](std::optional<ResolvedCategory> resolved) {
+	resolver_.resolve(game, [this, live, reassert](std::optional<ResolvedCategory> resolved) {
 		if (!resolved) {
 			// CategoryResolver's own safety property, unchanged: an
 			// unmapped/below-threshold/ignored result issues NO
@@ -58,7 +58,7 @@ void CategorySwitchCoordinator::switchIn(const detection::InstalledGame &game, b
 			log(L"Couldn't map that game to a Twitch category - category unchanged");
 			return;
 		}
-		applyResolvedCategory(*resolved, live, nullptr);
+		applyResolvedCategory(*resolved, live, nullptr, reassert);
 	});
 }
 
@@ -103,10 +103,10 @@ void CategorySwitchCoordinator::applyFallback(const std::wstring &fallbackCatego
 }
 
 void CategorySwitchCoordinator::applyResolvedCategory(const ResolvedCategory &resolved, bool live,
-							CompletionCallback onComplete)
+							CompletionCallback onComplete, bool reassert)
 {
 	if (!resolved.categoryId.empty()) {
-		performGuardedPatch(resolved.categoryId, resolved.categoryName, live, onComplete);
+		performGuardedPatch(resolved.categoryId, resolved.categoryName, live, onComplete, reassert);
 		return;
 	}
 
@@ -131,7 +131,7 @@ void CategorySwitchCoordinator::applyResolvedCategory(const ResolvedCategory &re
 	}
 
 	const std::wstring categoryName = resolved.categoryName;
-	categoryLookup_->findExact(categoryName, [this, categoryName, live, onComplete](std::optional<ResolvedCategory> exact) {
+	categoryLookup_->findExact(categoryName, [this, categoryName, live, onComplete, reassert](std::optional<ResolvedCategory> exact) {
 		if (!exact || exact->categoryId.empty()) {
 			// Still no id - resolve to nothing and let the UI ask,
 			// never PATCH. Same "unmapped" outcome as any other
@@ -142,12 +142,12 @@ void CategorySwitchCoordinator::applyResolvedCategory(const ResolvedCategory &re
 			}
 			return;
 		}
-		performGuardedPatch(exact->categoryId, exact->categoryName, live, onComplete);
+		performGuardedPatch(exact->categoryId, exact->categoryName, live, onComplete, reassert);
 	});
 }
 
 void CategorySwitchCoordinator::performGuardedPatch(const std::wstring &categoryId, const std::wstring &categoryName,
-						      bool live, CompletionCallback onComplete)
+						      bool live, CompletionCallback onComplete, bool reassert)
 {
 	if (!channelClient_) {
 		if (onComplete) {
@@ -160,6 +160,14 @@ void CategorySwitchCoordinator::performGuardedPatch(const std::wstring &category
 		if (onComplete) {
 			onComplete(false);
 		}
+		return;
+	}
+
+	// A re-assert comes from the live-category verification, which has just
+	// read the channel itself - skip the redundant GET and the stand-down
+	// it would trigger (see switchIn()'s doc comment).
+	if (reassert) {
+		issuePatch(categoryId, categoryName, live, onComplete);
 		return;
 	}
 

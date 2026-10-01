@@ -21,8 +21,8 @@
  * the real TwitchClient in the actual plugin.
  *
  * EXTERNAL-WRITER GUARD (DESIGN.md 3.5, event-driven per the owner's "no
- * polling" directive - ~1 extra GET per switch instead of a 120s ambient
- * poll, see TimingConstants.h's "NOTE ON EXTERNAL-WRITER DETECTION"):
+ * polling" directive - ~1 extra GET per switch; the separate, scheduled
+ * live-category verification is described in DetectionStateMachine.h):
  * immediately before every PATCH this class issues, it calls
  * IChannelClient::getChannelInfo() and compares the result against the
  * category id it last SUCCESSFULLY set ITSELF (lastAppliedCategoryId_ -
@@ -240,7 +240,16 @@ public:
 	//      categoryAppliedCallback_ fired with the applied name.
 	//   8. If live: POST /helix/streams/markers. Its outcome only ever
 	//      produces a log line - it can never undo step 7.
-	void switchIn(const detection::InstalledGame &game, bool live);
+	//
+	// reassert=true is for the scheduled live-category verification, which
+	// has ALREADY read the channel, found it showing something other than
+	// the running game, and decided to correct it. The external-writer
+	// guard (step 5) is skipped for that call: its premise - "the channel
+	// no longer shows what we last set, so someone else is writing, stand
+	// down" - is exactly the situation being corrected on purpose, and
+	// running it would freeze automation instead. A fight with another
+	// writer is bounded elsewhere (the state machine's flap breaker).
+	void switchIn(const detection::InstalledGame &game, bool live, bool reassert = false);
 
 	// DetectionStateMachine::Listener::onApplyFallback()'s delegate
 	// target. fallbackCategoryName is PluginConfig::fallbackCategoryName()
@@ -262,9 +271,10 @@ private:
 	// alias NAME to a real id first (categoryId empty) - see class doc
 	// comment's "TIER-2" note. The one and only place that decides "is
 	// this id usable" before anything reaches performGuardedPatch().
-	void applyResolvedCategory(const ResolvedCategory &resolved, bool live, CompletionCallback onComplete);
+	void applyResolvedCategory(const ResolvedCategory &resolved, bool live, CompletionCallback onComplete,
+				    bool reassert = false);
 	void performGuardedPatch(const std::wstring &categoryId, const std::wstring &categoryName, bool live,
-				  CompletionCallback onComplete);
+				  CompletionCallback onComplete, bool reassert = false);
 	void issuePatch(const std::wstring &categoryId, const std::wstring &categoryName, bool live,
 			 CompletionCallback onComplete);
 	void maybeCreateMarker(const std::wstring &categoryName);

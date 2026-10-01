@@ -40,10 +40,12 @@ using signalbox::core::DetectionStateMachine;
 using signalbox::core::IChannelClient;
 using signalbox::core::ICategoryLookup;
 using signalbox::core::IUserOverrideStore;
+using signalbox::core::NoGameChoice;
 using signalbox::core::PromptKind;
 using signalbox::core::ResolvedCategory;
 using signalbox::core::ShouldValidateTwitchToken;
 using signalbox::core::State;
+using signalbox::core::VerifyOutcome;
 using signalbox::core::TimingConstants;
 using signalbox::core::UserOverride;
 using signalbox::detection::Confidence;
@@ -374,6 +376,7 @@ void RunStateMachineScenarios()
 	timing.crashGraceS = 1;
 	timing.cleanExitGraceS = 1;
 	timing.promptTimeoutS = 1;
+	timing.noGameLivePromptTimeoutS = 1; // The no-game prompt has its own, longer, production default.
 	timing.flapBreakerN = 2;
 	timing.flapBreakerWindowS = 30;
 
@@ -1847,6 +1850,582 @@ void RunShippedDataFileScenarios()
 	Check(!denylist.shouldIgnoreProcess(L"", L"MarvelRivals_Launcher.exe"), "a game process is not rejected");
 }
 
+// ---------------------------------------------------------------------
+// SECTION 2g: live category verification, and the no-game-while-live
+// prompt.
+//
+// Both exist because of one real stream: SignalBox set the category,
+// then a multistream relay overwrote it at go-live and nothing ever
+// looked again; and the prompts that were supposed to catch the
+// aftermath defaulted to "hold" when nobody was there to answer.
+//
+// Unlike the sections above these do not sleep: the state machine takes
+// an injectable time source, so a two-minute snooze is one function call
+// and the exact second a quick check becomes due can be asserted.
+// ---------------------------------------------------------------------
+
+class FakeClock {
+public:
+	using Clock = std::chrono::steady_clock;
+
+	Clock::time_point now() const { return now_; }
+	void advanceS(int seconds) { now_ += std::chrono::seconds(seconds); }
+
+private:
+	Clock::time_point now_ = Clock::time_point{} + std::chrono::hours(1);
+};
+
+class ReapplyListener : public RecordingListener {
+public:
+	int reapplyCount = 0;
+	std::optional<std::wstring> lastReapplyGame;
+
+	void onReapplyCategory(const InstalledGame &game) override
+	{
+		++reapplyCount;
+		lastReapplyGame = game.displayName;
+		std::printf("  [LISTENER] onReapplyCategory(%s)\n", Narrow(game.displayName).c_str());
+	}
+};
+
+bool LogContains(const RecordingListener &listener, const wchar_t *needle)
+{
+	return AnyMessageContains(listener.logMessages, needle);
+}
+
+DetectedGame MakeDetected(const InstalledGame &game, std::uint32_t pid)
+{
+	DetectedGame d;
+	d.game = game;
+	d.pid = pid;
+	d.confidence = Confidence::High;
+	return d;
+}
+
+void RunLiveVerificationScenarios()
+{
+	std::printf("\n=== SECTION 2g-1: live category verification ===\n");
+
+	TimingConstants timing;
+	timing.confirmPolls = 1;
+	timing.minPatchSpacingS = 45;
+	timing.flapBreakerN = 50; // Not under test here; keep the breaker out of the way.
+	const InstalledGame coin = MakeGame(L"Coin Pusher Live", Platform::Steam, L"2731830");
+	const DetectedGame dCoin = MakeDetected(coin, 700);
+
+	// Brings a machine to "live, coin pusher confirmed and already the
+	// channel's category, and the switch long since settled".
+	auto settledLive = [&](DetectionStateMachine &sm, FakeClock &clock) {
+		sm.setLive(true);
+		sm.onLiveCategoryKnown(coin.displayName); // Matches: no go-live prompt, plain switch-in.
+		sm.onPollResult(dCoin);
+		clock.advanceS(50); // Past minPatchSpacingS.
+	};
+
+	// --- The reported failure: category overwritten after go-live. ---
+	{
+		std::printf("-- A restream-style overwrite is re-applied --\n");
+		FakeClock clock;
+		ReapplyListener listener;
+		DetectionStateMachine sm(listener, timing);
+		sm.setTimeSourceForTesting([&] { return clock.now(); });
+		settledLive(sm, clock);
+		Check(sm.state() == State::Active, "the game is confirmed Active");
+
+		auto result = sm.onLiveCategoryVerified(std::wstring(L"Fortnite"));
+		Check(result.outcome == VerifyOutcome::Reapplied, "channel shows Fortnite while the game runs: re-applied");
+		Check(listener.reapplyCount == 1 && listener.lastReapplyGame == coin.displayName,
+		      "the running game's category is what gets re-applied");
+		Check(result.withinGoLiveWindow, "inside the go-live window it is flagged as a probable external override");
+		Check(LogContains(listener, L"Live category was \"Fortnite\"") && LogContains(listener, L"possible multistream"),
+		      "and the activity log says what was found and why it is suspicious");
+		Check(listener.switchInCount == 1, "the original switch-in is untouched (re-apply is its own listener call)");
+	}
+
+	// --- A correct category is left alone, however it is spelled. ---
+	{
+		std::printf("-- A matching category is left alone --\n");
+		FakeClock clock;
+		ReapplyListener listener;
+		DetectionStateMachine sm(listener, timing);
+		sm.setTimeSourceForTesting([&] { return clock.now(); });
+		settledLive(sm, clock);
+
+		Check(sm.onLiveCategoryVerified(std::wstring(L"Coin Pusher Live")).outcome == VerifyOutcome::Matches,
+		      "exact match: nothing to do");
+		Check(sm.onLiveCategoryVerified(std::wstring(L"  coin pusher live ")).outcome == VerifyOutcome::Matches,
+		      "case and spacing are normalized away");
+		Check(listener.reapplyCount == 0, "and nothing was re-applied");
+	}
+	{
+		std::printf("-- Aliases and overrides are honored in the comparison --\n");
+		FakeClock clock;
+		ReapplyListener listener;
+		DetectionStateMachine sm(listener, timing);
+		sm.setTimeSourceForTesting([&] { return clock.now(); });
+		sm.setExpectedCategoryProvider([](const InstalledGame &g) {
+			return g.displayName == L"Coin Pusher Live" ? std::wstring(L"Arcade Coin Games") : std::wstring();
+		});
+		settledLive(sm, clock);
+		Check(sm.onLiveCategoryVerified(std::wstring(L"Arcade Coin Games")).outcome == VerifyOutcome::Matches,
+		      "a game whose Twitch category is an alias is not 'corrected' to its install name");
+		Check(listener.reapplyCount == 0, "no re-apply for an aliased match");
+	}
+	{
+		std::printf("-- The name Twitch actually accepted counts as a match --\n");
+		FakeClock clock;
+		ReapplyListener listener;
+		DetectionStateMachine sm(listener, timing);
+		sm.setTimeSourceForTesting([&] { return clock.now(); });
+		settledLive(sm, clock);
+		sm.onCategoryApplied(L"Coin Pusher: Live Edition"); // The switch-in's PATCH feedback.
+		Check(sm.onLiveCategoryVerified(std::wstring(L"Coin Pusher: Live Edition")).outcome == VerifyOutcome::Matches,
+		      "the resolved name from the PATCH feedback matches");
+	}
+
+	// --- Every reason NOT to re-apply. ---
+	{
+		std::printf("-- Never re-applied while locked / held / paused / offline / unverifiable --\n");
+		FakeClock clock;
+		ReapplyListener listener;
+		DetectionStateMachine sm(listener, timing);
+		sm.setTimeSourceForTesting([&] { return clock.now(); });
+		settledLive(sm, clock);
+
+		sm.setManualLock(true);
+		Check(sm.onLiveCategoryVerified(std::wstring(L"Fortnite")).outcome == VerifyOutcome::SkippedLocked,
+		      "manual lock: never re-applied");
+		sm.setManualLock(false);
+
+		sm.beginStreamEndingHold();
+		Check(sm.onLiveCategoryVerified(std::wstring(L"Fortnite")).outcome == VerifyOutcome::SkippedHold,
+		      "stream-ending hold: never re-applied");
+		sm.clearStreamEndingHold();
+
+		Check(sm.onLiveCategoryVerified(std::nullopt).outcome == VerifyOutcome::NotVerifiable,
+		      "a failed read is 'not verifiable', not a mismatch");
+		Check(listener.reapplyCount == 0, "nothing re-applied so far");
+
+		sm.onExternalChangeDetected();
+		Check(sm.onLiveCategoryVerified(std::wstring(L"Fortnite")).outcome == VerifyOutcome::SkippedPaused,
+		      "external-override freeze: never re-applied");
+		sm.resume();
+		Check(listener.reapplyCount == 0, "still nothing re-applied");
+
+		sm.setLive(false);
+		Check(sm.onLiveCategoryVerified(std::wstring(L"Fortnite")).outcome == VerifyOutcome::NotLive,
+		      "offline: nothing to verify");
+		Check(listener.reapplyCount == 0, "offline never re-applies");
+	}
+	{
+		std::printf("-- Nothing to compare against, or only an app that is offered, never applied --\n");
+		FakeClock clock;
+		ReapplyListener listener;
+		DetectionStateMachine sm(listener, timing);
+		sm.setTimeSourceForTesting([&] { return clock.now(); });
+		sm.setLive(true);
+		Check(sm.onLiveCategoryVerified(std::wstring(L"Just Chatting")).outcome == VerifyOutcome::NoActiveGame,
+		      "no game running: nothing to re-apply");
+
+		sm.setPromptOnlyPredicate([](const InstalledGame &) { return true; });
+		sm.onPollResult(dCoin); // Confirms as a prompt-only app.
+		clock.advanceS(50);
+		Check(sm.onLiveCategoryVerified(std::wstring(L"Just Chatting")).outcome == VerifyOutcome::NoActiveGame,
+		      "a creative/prompt-only app is never auto-applied by a correction either");
+		Check(listener.reapplyCount == 0, "no re-apply for either");
+	}
+	{
+		std::printf("-- Stale-read guard and the go-live window --\n");
+		FakeClock clock;
+		ReapplyListener listener;
+		DetectionStateMachine sm(listener, timing);
+		sm.setTimeSourceForTesting([&] { return clock.now(); });
+		sm.setLive(true);
+		sm.onLiveCategoryKnown(coin.displayName);
+		sm.onPollResult(dCoin); // Switch-in requested "now".
+		Check(sm.onLiveCategoryVerified(std::wstring(L"Fortnite")).outcome == VerifyOutcome::SkippedRecentSwitch,
+		      "right after our own switch the read may predate it: wait for the next check");
+		clock.advanceS(400); // Past minPatchSpacingS and past the 5 minute go-live window.
+		auto result = sm.onLiveCategoryVerified(std::wstring(L"Fortnite"));
+		Check(result.outcome == VerifyOutcome::Reapplied && !result.withinGoLiveWindow,
+		      "later in the stream it is still corrected, but not blamed on a go-live override");
+		Check(!LogContains(listener, L"possible multistream"), "and the log does not claim a multistream override");
+	}
+
+	// --- The user's own choices are not undone. ---
+	{
+		std::printf("-- An explicit 'keep' or user choice is respected; a timeout is not one --\n");
+		FakeClock clock;
+		ReapplyListener listener;
+		DetectionStateMachine sm(listener, timing);
+		sm.setTimeSourceForTesting([&] { return clock.now(); });
+		sm.setLive(true);
+		sm.onLiveCategoryKnown(L"Just Chatting");
+		sm.onPollResult(dCoin); // Mismatch at go-live: Trigger A prompt, no switch yet.
+		Check(sm.promptOutstanding() && sm.outstandingPromptKind() == PromptKind::GoLiveMismatch,
+		      "go-live mismatch raised the prompt");
+		Check(sm.onLiveCategoryVerified(std::wstring(L"Just Chatting")).outcome == VerifyOutcome::SkippedPrompt,
+		      "while the user is being asked, a check does not answer for them");
+		sm.respondToPrompt(/*acceptAction=*/false, /*dontAskAgainThisStream=*/false); // "Keep".
+		Check(sm.onLiveCategoryVerified(std::wstring(L"Just Chatting")).outcome == VerifyOutcome::SkippedKept,
+		      "'Keep <category>' is respected by every later check");
+		Check(listener.reapplyCount == 0, "so nothing was re-applied against their answer");
+	}
+	{
+		FakeClock clock;
+		ReapplyListener listener;
+		DetectionStateMachine sm(listener, timing);
+		sm.setTimeSourceForTesting([&] { return clock.now(); });
+		sm.setLive(true);
+		sm.onLiveCategoryKnown(L"Fortnite");
+		sm.onPollResult(dCoin);
+		Check(sm.promptOutstanding(), "go-live mismatch prompt raised (unattended: nobody answers it)");
+		clock.advanceS(21);
+		sm.onTick();
+		Check(!sm.promptOutstanding(), "it times out");
+		clock.advanceS(60);
+		Check(sm.onLiveCategoryVerified(std::wstring(L"Fortnite")).outcome == VerifyOutcome::Reapplied,
+		      "an UNANSWERED go-live prompt is not a decision: the next check still fixes the category");
+	}
+	{
+		FakeClock clock;
+		ReapplyListener listener;
+		DetectionStateMachine sm(listener, timing);
+		sm.setTimeSourceForTesting([&] { return clock.now(); });
+		settledLive(sm, clock);
+		sm.noteUserCategoryChoice();
+		Check(sm.onLiveCategoryVerified(std::wstring(L"Just Chatting")).outcome == VerifyOutcome::SkippedKept,
+		      "a category the user set through SignalBox (Just Chatting button, Undo) is left alone");
+		const InstalledGame other = MakeGame(L"Hades II", Platform::Steam, L"1145350");
+		sm.onPollResult(MakeDetected(other, 701));
+		if (sm.promptOutstanding()) // A game change from Pending can still raise the once-per-stream go-live prompt.
+			sm.respondToPrompt(/*acceptAction=*/true, /*dontAskAgainThisStream=*/false);
+		clock.advanceS(50);
+		Check(sm.onLiveCategoryVerified(std::wstring(L"Just Chatting")).outcome == VerifyOutcome::Reapplied,
+		      "...until a different game starts, which is a fresh decision");
+	}
+
+	// --- A writer that keeps winning trips the flap breaker, not an infinite loop. ---
+	{
+		std::printf("-- A fight with another writer ends in a pause, not a loop --\n");
+		TimingConstants fight = timing;
+		fight.flapBreakerN = 2;
+		fight.flapBreakerWindowS = 600;
+		fight.minPatchSpacingS = 1;
+		FakeClock clock;
+		ReapplyListener listener;
+		DetectionStateMachine sm(listener, fight);
+		sm.setTimeSourceForTesting([&] { return clock.now(); });
+		settledLive(sm, clock);
+		for (int i = 0; i < 6 && !sm.isAutomationPaused(); ++i) {
+			sm.onLiveCategoryVerified(std::wstring(L"Fortnite"));
+			clock.advanceS(5);
+		}
+		Check(sm.isAutomationPaused(), "repeated re-applies trip the existing flap breaker");
+		Check(sm.onLiveCategoryVerified(std::wstring(L"Fortnite")).outcome == VerifyOutcome::SkippedPaused,
+		      "and a paused machine stops re-applying");
+	}
+
+	// --- The schedule. ---
+	std::printf("\n=== SECTION 2g-2: check schedule (quick checks + periodic) ===\n");
+	{
+		FakeClock clock;
+		ReapplyListener listener;
+		DetectionStateMachine sm(listener, timing);
+		sm.setTimeSourceForTesting([&] { return clock.now(); });
+
+		Check(!sm.takeLiveCategoryCheckDue(), "offline: never due");
+		sm.setLive(true);
+		Check(!sm.takeLiveCategoryCheckDue(), "not due the instant the stream starts");
+		clock.advanceS(14);
+		Check(!sm.takeLiveCategoryCheckDue(), "not due at +14 s");
+		clock.advanceS(1);
+		Check(sm.takeLiveCategoryCheckDue(), "quick check due at +15 s");
+		Check(!sm.takeLiveCategoryCheckDue(), "and only once");
+		clock.advanceS(44);
+		Check(!sm.takeLiveCategoryCheckDue(), "not due at +59 s");
+		clock.advanceS(1);
+		Check(sm.takeLiveCategoryCheckDue(), "quick check due at +60 s");
+		clock.advanceS(119);
+		Check(!sm.takeLiveCategoryCheckDue(), "periodic check is measured from the last check: not due at +179 s");
+		clock.advanceS(1);
+		Check(sm.takeLiveCategoryCheckDue(), "periodic check due 120 s after the last one (+180 s)");
+		clock.advanceS(119);
+		Check(!sm.takeLiveCategoryCheckDue(), "then every 120 s, not sooner");
+		clock.advanceS(1);
+		Check(sm.takeLiveCategoryCheckDue(), "...and on time");
+
+		sm.setLive(false);
+		clock.advanceS(1000);
+		Check(!sm.takeLiveCategoryCheckDue(), "the schedule stops with the stream");
+		sm.setLive(true);
+		clock.advanceS(15);
+		Check(sm.takeLiveCategoryCheckDue(), "and restarts from zero on the next stream");
+	}
+	{
+		TimingConstants noQuick = timing;
+		noQuick.goLiveQuickChecks = false;
+		FakeClock clock;
+		ReapplyListener listener;
+		DetectionStateMachine sm(listener, noQuick);
+		sm.setTimeSourceForTesting([&] { return clock.now(); });
+		sm.setLive(true);
+		clock.advanceS(60);
+		Check(!sm.takeLiveCategoryCheckDue(), "quick checks off: nothing at +15 s or +60 s");
+		clock.advanceS(60);
+		Check(sm.takeLiveCategoryCheckDue(), "only the periodic check, at the configured interval");
+	}
+	{
+		TimingConstants tooFast = timing;
+		tooFast.goLiveQuickChecks = false;
+		tooFast.liveCategoryCheckIntervalS = 1; // A hand-edited config.
+		FakeClock clock;
+		ReapplyListener listener;
+		DetectionStateMachine sm(listener, tooFast);
+		sm.setTimeSourceForTesting([&] { return clock.now(); });
+		sm.setLive(true);
+		clock.advanceS(29);
+		Check(!sm.takeLiveCategoryCheckDue(), "an absurdly small interval is floored at 30 s: not due at 29 s");
+		clock.advanceS(1);
+		Check(sm.takeLiveCategoryCheckDue(), "due at the 30 s floor");
+	}
+	{
+		std::printf("-- The coordinator's re-assert skips the stand-down that would freeze automation --\n");
+		FakeOverrideStore overrides;
+		FakeCategoryLookup lookup;
+		lookup.seedExact(L"Game A", ResolvedCategory{L"111", L"Game A"});
+		CategoryResolver resolver(overrides, &lookup);
+		std::vector<std::wstring> activity;
+		int externalWriterCalls = 0;
+		CategorySwitchCoordinator coordinator(
+			resolver, [&](const std::wstring &m) { activity.push_back(m); }, [&]() { ++externalWriterCalls; });
+		FakeChannelClient channelClient;
+		channelClient.channelInfoToReturn = ChannelSnapshot{L"", L""};
+		coordinator.setChannelClient(&channelClient);
+
+		const InstalledGame gameA = MakeGame(L"Game A", Platform::Steam, L"1");
+		coordinator.switchIn(gameA, /*live=*/false); // Establishes lastApplied = 111.
+		channelClient.channelInfoToReturn = ChannelSnapshot{L"999", L"Fortnite"};
+		channelClient.callLog.clear();
+
+		coordinator.switchIn(gameA, /*live=*/false, /*reassert=*/true);
+		Check(channelClient.callLog == std::vector<std::string>{"setChannelCategory:111"},
+		      "a re-assert PATCHes straight away - no second GET, no guard");
+		Check(externalWriterCalls == 0, "and is never mistaken for an unknown outside writer");
+
+		// Contrast: the ordinary path, same state, still stands down.
+		coordinator.switchIn(gameA, /*live=*/false);
+		Check(CountCallsStartingWith(channelClient.callLog, "getChannelInfo") == 1,
+		      "the ordinary switch-in still runs the guard");
+	}
+}
+
+void RunNoGameWhileLiveScenarios()
+{
+	std::printf("\n=== SECTION 2g-3: no-game-while-live prompt ===\n");
+
+	TimingConstants timing;
+	timing.confirmPolls = 1;
+	timing.cleanExitGraceS = 30;
+	timing.crashGraceS = 30;
+	timing.noGameSnoozeS = 120;
+	timing.noGameLivePromptTimeoutS = 60;
+	timing.flapBreakerN = 50;
+	const InstalledGame rivals = MakeGame(L"Marvel Rivals", Platform::Steam, L"2767030");
+	const DetectedGame dRivals = MakeDetected(rivals, 800);
+
+	auto tickFor = [](DetectionStateMachine &sm, FakeClock &clock, int seconds) {
+		// Heartbeat like the dock's: a tick every 5 s.
+		for (int elapsed = 0; elapsed < seconds; elapsed += 5) {
+			clock.advanceS(5);
+			sm.onTick();
+		}
+	};
+
+	// --- Go-live with nothing running. ---
+	{
+		std::printf("-- Going live with nothing detected asks, after the snooze interval --\n");
+		FakeClock clock;
+		ReapplyListener listener;
+		DetectionStateMachine sm(listener, timing);
+		sm.setTimeSourceForTesting([&] { return clock.now(); });
+		sm.setLive(true);
+		tickFor(sm, clock, 115);
+		Check(!sm.promptOutstanding(), "not asked at the instant of go-live (a 'Starting soon' scene is not interrupted)");
+		tickFor(sm, clock, 10);
+		Check(sm.promptOutstanding() && sm.outstandingPromptKind() == PromptKind::GameClosed,
+		      "asked once nothing has appeared after the interval");
+		Check(listener.promptCount == 1 && listener.lastPromptGame.displayName.empty(),
+		      "the prompt names no game - there isn't one");
+	}
+
+	// --- Each choice. ---
+	{
+		std::printf("-- 'Stream ending soon' -> the existing hold --\n");
+		FakeClock clock;
+		ReapplyListener listener;
+		DetectionStateMachine sm(listener, timing);
+		sm.setTimeSourceForTesting([&] { return clock.now(); });
+		sm.setLive(true);
+		tickFor(sm, clock, 120);
+		sm.respondNoGame(NoGameChoice::StreamEnding);
+		Check(sm.streamEndingHold() && !sm.promptOutstanding(), "enters the stream-ending hold and closes the prompt");
+		const int promptsBefore = listener.promptCount;
+		tickFor(sm, clock, 1200);
+		Check(listener.promptCount == promptsBefore, "stops asking for the rest of the stream");
+		Check(listener.applyFallbackCount == 0, "and never touches the category");
+		sm.clearStreamEndingHold();
+		tickFor(sm, clock, 125);
+		Check(sm.promptOutstanding(), "clearing the hold resumes the question if still nothing is running");
+	}
+	{
+		std::printf("-- 'Switch to Just Chatting' -> fallback, once --\n");
+		FakeClock clock;
+		ReapplyListener listener;
+		DetectionStateMachine sm(listener, timing);
+		sm.setTimeSourceForTesting([&] { return clock.now(); });
+		Check(!sm.fallbackEnabled(), "the 'allow fallback' setting is off, as by default");
+		sm.setLive(true);
+		tickFor(sm, clock, 120);
+		sm.respondNoGame(NoGameChoice::JustChatting);
+		Check(listener.applyFallbackCount == 1, "the fallback category is applied exactly once");
+		const int promptsBefore = listener.promptCount;
+		tickFor(sm, clock, 1200);
+		Check(listener.applyFallbackCount == 1 && listener.promptCount == promptsBefore,
+		      "and nothing is applied or asked again while still no game");
+		Check(!sm.streamEndingHold(), "it is not a hold: a game starting later switches normally");
+		sm.onPollResult(dRivals);
+		Check(listener.switchInCount == 1, "a game that starts afterwards is switched to normally");
+	}
+	{
+		std::printf("-- 'Waiting for a game' -> snooze, ask again --\n");
+		FakeClock clock;
+		ReapplyListener listener;
+		DetectionStateMachine sm(listener, timing);
+		sm.setTimeSourceForTesting([&] { return clock.now(); });
+		sm.setLive(true);
+		tickFor(sm, clock, 120);
+		sm.respondNoGame(NoGameChoice::Waiting);
+		Check(!sm.promptOutstanding() && !sm.streamEndingHold(), "prompt closed, no hold");
+		Check(listener.applyFallbackCount == 0, "category untouched");
+		tickFor(sm, clock, 115);
+		Check(!sm.promptOutstanding(), "quiet during the snooze (115 s)");
+		tickFor(sm, clock, 10);
+		Check(sm.promptOutstanding(), "asked again once 2 minutes have passed with still nothing");
+		sm.respondNoGame(NoGameChoice::Waiting);
+		tickFor(sm, clock, 125);
+		Check(sm.promptOutstanding() && listener.promptCount == 3, "and again, for as long as nothing is detected");
+	}
+	{
+		std::printf("-- A game appearing dismisses the prompt and switches normally --\n");
+		FakeClock clock;
+		ReapplyListener listener;
+		DetectionStateMachine sm(listener, timing);
+		sm.setTimeSourceForTesting([&] { return clock.now(); });
+		sm.setLive(true);
+		sm.onLiveCategoryKnown(rivals.displayName); // Already the right category: no Trigger A.
+		tickFor(sm, clock, 120);
+		Check(sm.promptOutstanding(), "prompt is up");
+		sm.onPollResult(dRivals);
+		Check(!sm.promptOutstanding(), "a confirmed game auto-dismisses it");
+		Check(listener.switchInCount == 1, "and the category switches normally");
+		const int promptsBefore = listener.promptCount;
+		tickFor(sm, clock, 600);
+		Check(listener.promptCount == promptsBefore, "no further questions while the game runs");
+	}
+	{
+		std::printf("-- Unanswered -> waiting, not a hold --\n");
+		FakeClock clock;
+		ReapplyListener listener;
+		DetectionStateMachine sm(listener, timing);
+		sm.setTimeSourceForTesting([&] { return clock.now(); });
+		sm.setLive(true);
+		tickFor(sm, clock, 120);
+		Check(sm.promptOutstanding(), "prompt is up and nobody is there");
+		tickFor(sm, clock, 65);
+		Check(!sm.promptOutstanding(), "it times out");
+		Check(!sm.streamEndingHold(), "the timeout is NOT a hold");
+		Check(listener.applyFallbackCount == 0, "and never applies Just Chatting on its own");
+		tickFor(sm, clock, 125);
+		Check(sm.promptOutstanding(), "it asks again: an unattended stream keeps being asked");
+	}
+
+	// --- The other way into the same prompt: a game closing. ---
+	{
+		std::printf("-- A game closing raises the same prompt, and the same rules apply --\n");
+		FakeClock clock;
+		ReapplyListener listener;
+		DetectionStateMachine sm(listener, timing);
+		sm.setTimeSourceForTesting([&] { return clock.now(); });
+		sm.setLive(true);
+		sm.onLiveCategoryKnown(rivals.displayName);
+		sm.onPollResult(dRivals);
+		sm.onTrackedProcessExited(ExitReason::Clean, rivals);
+		Check(sm.state() == State::Grace, "game closed: grace window");
+		tickFor(sm, clock, 25);
+		Check(!sm.promptOutstanding(), "still inside grace at 25 s");
+		tickFor(sm, clock, 10);
+		Check(sm.promptOutstanding() && sm.outstandingPromptKind() == PromptKind::GameClosed,
+		      "grace expiry raises the prompt");
+		sm.respondNoGame(NoGameChoice::Waiting);
+		Check(sm.state() == State::Fallback, "waiting leaves it watching for a game");
+		tickFor(sm, clock, 125);
+		Check(sm.promptOutstanding(), "and it asks again after the snooze");
+	}
+	{
+		std::printf("-- A relaunch while the prompt is up cancels it --\n");
+		FakeClock clock;
+		ReapplyListener listener;
+		DetectionStateMachine sm(listener, timing);
+		sm.setTimeSourceForTesting([&] { return clock.now(); });
+		sm.setLive(true);
+		sm.onLiveCategoryKnown(rivals.displayName);
+		sm.onPollResult(dRivals);
+		sm.onTrackedProcessExited(ExitReason::Crash, rivals);
+		tickFor(sm, clock, 35);
+		Check(sm.promptOutstanding(), "prompt up");
+		sm.onPollResult(dRivals);
+		Check(!sm.promptOutstanding() && sm.state() == State::Active, "the game coming back dismisses it");
+	}
+
+	// --- When it must stay quiet. ---
+	{
+		std::printf("-- Quiet when offline, with prompts off, or when held --\n");
+		FakeClock clock;
+		ReapplyListener listener;
+		DetectionStateMachine sm(listener, timing);
+		sm.setTimeSourceForTesting([&] { return clock.now(); });
+		tickFor(sm, clock, 600);
+		Check(listener.promptCount == 0, "offline: no prompt");
+
+		sm.setPromptsEnabled(false);
+		sm.setLive(true);
+		tickFor(sm, clock, 600);
+		Check(listener.promptCount == 0, "prompts disabled: no prompt");
+		sm.setLive(false);
+
+		sm.setPromptsEnabled(true);
+		sm.setLive(true);
+		sm.beginStreamEndingHold();
+		tickFor(sm, clock, 600);
+		Check(listener.promptCount == 0, "stream-ending hold: no prompt");
+	}
+	{
+		std::printf("-- Trigger D stands down while live (one question, not two) --\n");
+		TimingConstants withIdle = timing;
+		withIdle.noGameIdlePromptS = 10;
+		withIdle.noGameSnoozeS = 300;
+		FakeClock clock;
+		ReapplyListener listener;
+		DetectionStateMachine sm(listener, withIdle);
+		sm.setTimeSourceForTesting([&] { return clock.now(); });
+		sm.setNoGameIdleEnabled(true);
+		sm.setLive(true);
+		tickFor(sm, clock, 100);
+		Check(listener.promptCount == 0, "the idle prompt does not fire on top of the live one's schedule");
+	}
+}
+
 int main()
 {
 	std::printf("SignalBox - standalone harness (no OBS, no live Twitch)\n");
@@ -1859,6 +2438,8 @@ int main()
 	RunExternalOverrideScenarios();
 	RunStreamEndingHoldScenarios();
 	RunIdlePromptScenarios();
+	RunLiveVerificationScenarios();
+	RunNoGameWhileLiveScenarios();
 	RunCoordinatorScenarios();
 	RunInstallIndexScenario();
 	RunTokenValidationTimingScenario();

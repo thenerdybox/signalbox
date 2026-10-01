@@ -119,6 +119,9 @@ private:
 	QSpinBox *cleanExitGraceSpin_ = nullptr;
 	QSpinBox *minPatchSpacingSpin_ = nullptr;
 	QSpinBox *promptTimeoutSpin_ = nullptr;
+	QSpinBox *liveCheckIntervalSpin_ = nullptr;
+	QCheckBox *goLiveQuickChecksCheckbox_ = nullptr;
+	QSpinBox *noGameSnoozeSpin_ = nullptr;
 
 	QListWidget *overridesList_ = nullptr; // View-and-remove only - see class doc comment.
 	std::vector<std::wstring> pendingOverrideRemovals_; // Keys staged for removal; applied in onSaveClicked().

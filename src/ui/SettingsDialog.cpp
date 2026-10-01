@@ -141,6 +141,33 @@ void SettingsDialog::buildUi()
 	promptTimeoutSpin_->setSuffix(QStringLiteral(" s"));
 	timingForm->addRow(QStringLiteral("Prompt timeout (falls through to hold):"), promptTimeoutSpin_);
 
+	liveCheckIntervalSpin_ = new QSpinBox(timingGroup);
+	liveCheckIntervalSpin_->setRange(30, 3600);
+	liveCheckIntervalSpin_->setValue(static_cast<int>(timing.liveCategoryCheckIntervalS));
+	liveCheckIntervalSpin_->setSuffix(QStringLiteral(" s"));
+	liveCheckIntervalSpin_->setToolTip(
+		QStringLiteral("While you're live and a game is running, SignalBox checks your Twitch category this often "
+				"and puts the game's category back if something else changed it (a multistream service, "
+				"or a manual edit). Turn off \"Automatically switch category\" or use Stream Ending to "
+				"keep a category of your own."));
+	timingForm->addRow(QStringLiteral("Re-check live category every:"), liveCheckIntervalSpin_);
+
+	goLiveQuickChecksCheckbox_ = new QCheckBox(QStringLiteral("Also check 15 s and 60 s after going live"), timingGroup);
+	goLiveQuickChecksCheckbox_->setChecked(timing.goLiveQuickChecks);
+	goLiveQuickChecksCheckbox_->setToolTip(
+		QStringLiteral("Multistream services such as Restream can overwrite your category a few seconds after "
+				"you go live. These early checks catch that quickly."));
+	timingForm->addRow(goLiveQuickChecksCheckbox_);
+
+	noGameSnoozeSpin_ = new QSpinBox(timingGroup);
+	noGameSnoozeSpin_->setRange(30, 1800);
+	noGameSnoozeSpin_->setValue(static_cast<int>(timing.noGameSnoozeS));
+	noGameSnoozeSpin_->setSuffix(QStringLiteral(" s"));
+	noGameSnoozeSpin_->setToolTip(
+		QStringLiteral("When you're live with no game running and answer \"Waiting for a game\" (or don't answer), "
+				"SignalBox asks again after this long if there's still no game."));
+	timingForm->addRow(QStringLiteral("Ask again after \"Waiting for a game\":"), noGameSnoozeSpin_);
+
 	root->addWidget(timingGroup);
 
 	// --- Per-game overrides (view-and-remove only - see class doc comment) ---
@@ -231,6 +258,9 @@ void SettingsDialog::onSaveClicked()
 	timing.cleanExitGraceS = static_cast<std::uint32_t>(cleanExitGraceSpin_->value());
 	timing.minPatchSpacingS = static_cast<std::uint32_t>(minPatchSpacingSpin_->value());
 	timing.promptTimeoutS = static_cast<std::uint32_t>(promptTimeoutSpin_->value());
+	timing.liveCategoryCheckIntervalS = static_cast<std::uint32_t>(liveCheckIntervalSpin_->value());
+	timing.goLiveQuickChecks = goLiveQuickChecksCheckbox_->isChecked();
+	timing.noGameSnoozeS = static_cast<std::uint32_t>(noGameSnoozeSpin_->value());
 	config_.setTiming(timing);
 	stateMachine_.setTiming(timing); // Live re-tune - see DetectionStateMachine::setTiming()'s doc comment.
 

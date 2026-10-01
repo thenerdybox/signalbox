@@ -115,6 +115,8 @@ target_sources(
     src/ui/CategoryDock.cpp
     src/ui/PromptWidget.h
     src/ui/PromptWidget.cpp
+    src/ui/PromptToast.h
+    src/ui/PromptToast.cpp
     src/ui/SettingsDialog.h
     src/ui/SettingsDialog.cpp
     src/ui/GameOverrideDialog.h

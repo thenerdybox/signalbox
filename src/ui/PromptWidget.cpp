@@ -9,7 +9,9 @@
 
 #include "PromptWidget.h"
 
+#include <QBoxLayout>
 #include <QCheckBox>
+#include <QFont>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPushButton>
@@ -27,6 +29,8 @@ PromptWidget::PromptWidget(QWidget *parent) : QWidget(parent)
 	// one - this is a plain child widget of the dock).
 	setFocusPolicy(Qt::NoFocus);
 	setAttribute(Qt::WA_ShowWithoutActivating, true);
+	setAttribute(Qt::WA_StyledBackground, true); // So the highlighted border below actually paints.
+	setObjectName(QStringLiteral("signalboxPrompt"));
 
 	auto *layout = new QVBoxLayout(this);
 
@@ -34,7 +38,8 @@ PromptWidget::PromptWidget(QWidget *parent) : QWidget(parent)
 	messageLabel_->setWordWrap(true);
 	layout->addWidget(messageLabel_);
 
-	auto *buttonRow = new QHBoxLayout();
+	auto *buttonRow = new QBoxLayout(QBoxLayout::LeftToRight);
+	buttonRow_ = buttonRow;
 	primaryButton_ = new QPushButton(this);
 	secondaryButton_ = new QPushButton(this);
 	tertiaryButton_ = new QPushButton(this);
@@ -66,6 +71,17 @@ void PromptWidget::showPrompt(core::PromptKind kind, const QString &gameName, co
 	kind_ = kind;
 	dontAskAgainCheckbox_->setChecked(false);
 
+	// The no-game prompt has three long answers - stack them so none is
+	// elided in a narrow dock - and gets a highlighted frame, because it is
+	// the one question that should not sit unseen behind another tab.
+	const bool prominent = (kind == core::PromptKind::GameClosed);
+	buttonRow_->setDirection(prominent ? QBoxLayout::TopToBottom : QBoxLayout::LeftToRight);
+	setStyleSheet(prominent ? QStringLiteral("#signalboxPrompt { border: 2px solid #e0a030; border-radius: 4px; }")
+				: QString());
+	QFont messageFont = messageLabel_->font();
+	messageFont.setBold(prominent);
+	messageLabel_->setFont(messageFont);
+
 	switch (kind_) {
 	case core::PromptKind::GoLiveMismatch:
 		messageLabel_->setText(QStringLiteral("You're live in \"%1\" but %2 is running.")
@@ -76,12 +92,13 @@ void PromptWidget::showPrompt(core::PromptKind kind, const QString &gameName, co
 		dontAskAgainCheckbox_->setVisible(false); // "Don't ask" is its own button here, not a checkbox.
 		break;
 	case core::PromptKind::GameClosed:
-		messageLabel_->setText(
-			QStringLiteral("No game detected. You're still live in \"%1\".").arg(currentCategory));
-		primaryButton_->setText(QStringLiteral("Wait for a new game"));
-		secondaryButton_->setText(QStringLiteral("Switch to Just Chatting"));
-		tertiaryButton_->setText(QStringLiteral("Ignore this change"));
-		dontAskAgainCheckbox_->setVisible(true);
+		messageLabel_->setText(QStringLiteral("No game detected. You're live in \"%1\" - what's going on?")
+						.arg(currentCategory));
+		primaryButton_->setText(QStringLiteral("Stream ending soon"));
+		secondaryButton_->setText(QStringLiteral("Switch to %1")
+						  .arg(targetCategory.isEmpty() ? QStringLiteral("Just Chatting") : targetCategory));
+		tertiaryButton_->setText(QStringLiteral("Waiting for a game (updating / loading / installing)"));
+		dontAskAgainCheckbox_->setVisible(false); // The three answers cover it; no scope checkbox needed.
 		break;
 	case core::PromptKind::CreativeApp: {
 		// Deliberately phrased as a question about what the user is
@@ -130,6 +147,11 @@ void PromptWidget::dismissWithoutResponse()
 
 void PromptWidget::onPrimaryClicked()
 {
+	if (kind_ == core::PromptKind::GameClosed) {
+		hide();
+		emit noGameResponded(core::NoGameChoice::StreamEnding);
+		return;
+	}
 	// GoLiveMismatch: "Set to <game>" (accept). GameClosed: "Wait for a
 	// new game" (keep waiting, not an accept). CreativeApp: "Switch to
 	// <category>" (accept - and the only path that ever applies a
@@ -144,6 +166,11 @@ void PromptWidget::onPrimaryClicked()
 
 void PromptWidget::onSecondaryClicked()
 {
+	if (kind_ == core::PromptKind::GameClosed) {
+		hide();
+		emit noGameResponded(core::NoGameChoice::JustChatting);
+		return;
+	}
 	// GoLiveMismatch: "Keep <category>" (not an accept). GameClosed:
 	// "Switch to <fallback>" (accept).
 	const bool acceptAction = (kind_ == core::PromptKind::GameClosed);
@@ -153,6 +180,11 @@ void PromptWidget::onSecondaryClicked()
 
 void PromptWidget::onTertiaryClicked()
 {
+	if (kind_ == core::PromptKind::GameClosed) {
+		hide();
+		emit noGameResponded(core::NoGameChoice::Waiting);
+		return;
+	}
 	// GoLiveMismatch: "Don't ask this stream" - keep + suppress.
 	// CreativeApp: same, and this is the button that matters most for
 	// that trigger - someone who leaves an editor open all session needs

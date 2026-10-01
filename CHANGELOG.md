@@ -5,6 +5,39 @@ Changelog](https://keepachangelog.com/en/1.1.0/) format. This file is the
 single source of truth for release notes — GitHub Releases and the public
 patch-notes page are both generated from it.
 
+## [0.2.7] — 2026-10-01
+
+### Added
+
+- **SignalBox now keeps checking your category while you stream.** Every two
+  minutes while you are live and a game is running, it reads your Twitch
+  category and puts the game's category back if something else changed it - a
+  multistream service pushing its own saved category, or an edit made
+  elsewhere. It also checks 15 and 60 seconds after you go live, which is when
+  those services usually overwrite it. Manual lock, the Stream Ending hold and
+  a category you chose yourself are always left alone, and the check never
+  runs while you are offline.
+- **A question when no game is running while you are live.** If you go live
+  with nothing running, or a game closes and nothing replaces it, SignalBox
+  asks what is going on: stream ending soon (it stops asking), switch to Just
+  Chatting, or waiting for a game to update, load or install (it keeps
+  scanning and asks again in two minutes if there is still nothing). A game
+  starting at any point dismisses the question and switches normally. The
+  question appears in the dock and as a small card on your screen that never
+  takes focus away from your game; clicking the card brings up the dock.
+- Settings: how often the live category is re-checked, whether to also check
+  right after going live, and how long "Waiting for a game" stays quiet.
+
+### Changed
+
+- Leaving the question about a mismatched go-live category, or the new
+  no-game question, unanswered no longer means "never fix this": SignalBox
+  keeps your current category untouched, but the next check corrects it and
+  the no-game question comes back. Only an answer you click ("Keep",
+  "Stream ending soon") stops it.
+- The log now records the category found at go-live and the result of each
+  check.
+
 ## [0.2.6] — 2026-08-23
 
 ### Added

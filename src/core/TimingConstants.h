@@ -96,17 +96,36 @@ struct TimingConstants {
 	// rate-limits.md "Recommended Minimum Interval" (30-60s).
 	std::uint32_t minPatchSpacingS = 45;
 
-	// NOTE ON EXTERNAL-WRITER DETECTION (DESIGN.md 3.5): this project
-	// deliberately does NOT run an ambient timer polling
-	// GET /helix/channels every N seconds while live - at ~30
-	// requests/hour that would dwarf the rest of this plugin's entire
-	// Twitch budget (~8 calls/hour steady state) for a check that only
-	// matters at the moment of a PATCH. The equivalent protection is
-	// event-driven instead: check GET /helix/channels immediately before
-	// issuing a PATCH, not on a schedule. There is deliberately no
-	// "channelSyncIntervalS" constant here - see the project report for
-	// exactly where that check belongs once TwitchClient is wired to a
-	// coordinator.
+	// --- Live category verification (DetectionStateMachine) ---
+	//
+	// While live, the channel's category is re-read on a schedule and, if
+	// a confirmed game is running and the channel shows something else,
+	// the game's category is re-applied. This exists because the category
+	// can be changed behind SignalBox's back at any time - multistream
+	// services push their own saved category when a stream starts - and a
+	// single read at go-live races exactly that.
+	//
+	// Cost: one GET /helix/channels per interval while live, i.e. about 30
+	// requests an hour at the default - a rounding error against the
+	// 800-points-a-minute bucket in rate-limits.md. Never runs while
+	// offline, and the Twitch client's own 429/transport backoff still
+	// gates every call (a gated call simply reports "could not verify" and
+	// waits for the next slot - there is no retry loop).
+
+	// Seconds between verifications while live. Clamped to a 30 s floor on
+	// load so a hand-edited config can never turn this into a tight poll.
+	std::uint32_t liveCategoryCheckIntervalS = 120;
+
+	// Extra early verifications shortly after going live, to catch a
+	// multistream relay overwriting the category in the first moments of a
+	// stream. Offsets are seconds after the stream starts.
+	bool goLiveQuickChecks = true;
+	std::uint32_t goLiveQuickCheckFirstS = 15;
+	std::uint32_t goLiveQuickCheckSecondS = 60;
+
+	// A correction made within this many seconds of going live is
+	// reported as a probable multistream/external override in the log.
+	std::uint32_t goLiveOverrideWindowS = 300;
 
 	// --- Crash-loop / flap breaker (DetectionStateMachine) ---
 
@@ -139,6 +158,21 @@ struct TimingConstants {
 	// Only ever asked ONCE per idle spell - see
 	// DetectionStateMachine's noGameIdleAsked_.
 	std::uint32_t noGameIdlePromptS = 120;
+
+	// "No game while live" prompt (DetectionStateMachine, PromptKind::GameClosed).
+	//
+	// noGameSnoozeS: how long "Waiting for a game" (or leaving the prompt
+	// unanswered) stays quiet before asking again, if still nothing is
+	// detected. Also the delay before the first question when a stream
+	// starts with no game running, so a "Starting soon" scene is not
+	// interrupted the instant it goes live.
+	std::uint32_t noGameSnoozeS = 120;
+
+	// How long that prompt waits for an answer before it counts as
+	// "Waiting for a game". Longer than promptTimeoutS: this prompt is
+	// answered from outside OBS (the streamer is in the game), and an
+	// unanswered one never changes the category either way.
+	std::uint32_t noGameLivePromptTimeoutS = 60;
 
 	// --- Twitch token validation (TwitchAuth::validate()) ---
 

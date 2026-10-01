@@ -12,6 +12,7 @@
 
 #include <QClipboard>
 #include <QDateTime>
+#include <QDockWidget>
 #include <QDesktopServices>
 #include <QGroupBox>
 #include <QGuiApplication>
@@ -35,6 +36,7 @@
 #include "../twitch/TwitchChannelClient.h"
 #include "../twitch/TwitchClient.h"
 #include "GameOverrideDialog.h"
+#include "PromptToast.h"
 #include "PromptWidget.h"
 #include "SettingsDialog.h"
 
@@ -86,7 +88,7 @@ CategoryDock::CategoryDock(core::PluginConfig &config, core::CategoryResolver &r
 			  // entry is logged without one.
 			  const std::wstring previousCategory = liveCategory_.toStdWString();
 
-			  stateMachine_.onLiveCategoryKnown(categoryName);
+			  stateMachine_.onCategoryApplied(categoryName);
 			  liveCategory_ = toQString(categoryName);
 
 			  if (previousCategory != categoryName) {
@@ -117,6 +119,20 @@ CategoryDock::CategoryDock(core::PluginConfig &config, core::CategoryResolver &r
 	// the harness with no resolver at all.
 	stateMachine_.setPromptOnlyPredicate(
 		[this](const detection::InstalledGame &game) { return resolver_.isPromptOnly(game); });
+
+	// Live category verification compares the channel's category with the
+	// running game's, and a game's Twitch name is not always its install
+	// name: a per-game override or an alias renames it. Tell the state
+	// machine what this game maps to so a correct category is never
+	// "corrected" - see DetectionStateMachine::onLiveCategoryVerified().
+	stateMachine_.setExpectedCategoryProvider([this](const detection::InstalledGame &game) -> std::wstring {
+		if (const auto override = pluginConfig_.findUserOverride(core::CategoryResolver::overrideKeyFor(game)))
+			return override->ignored ? std::wstring() : override->categoryName;
+		return resolver_.aliasCategoryFor(game);
+	});
+
+	toast_ = std::make_unique<PromptToast>();
+	connect(toast_.get(), &PromptToast::clicked, this, [this]() { revealPrompt(); });
 
 	// Why a lookup missed, in the activity log rather than nowhere - see
 	// CategoryResolver::setDiagnosticCallback(). The coordinator's own
@@ -156,6 +172,7 @@ CategoryDock::CategoryDock(core::PluginConfig &config, core::CategoryResolver &r
 	tickTimer_->setInterval(static_cast<int>(pluginConfig_.timing().pollIntervalS) * 1000);
 	connect(tickTimer_, &QTimer::timeout, this, [this]() {
 		stateMachine_.onTick();
+		maybeVerifyLiveCategory();    // Scheduled live-category check - see its doc comment.
 		syncPromptWidgetVisibility(); // onTick() can resolve a timeout without going through PromptWidget's own handlers.
 		maybeValidateTwitchToken();   // Hourly Twitch token validation (project brief item 5) - see its own doc comment.
 		updateCountdownTimerState();
@@ -181,6 +198,8 @@ CategoryDock::CategoryDock(core::PluginConfig &config, core::CategoryResolver &r
 
 CategoryDock::~CategoryDock()
 {
+	if (toast_)
+		toast_->dismiss();
 	obs_frontend_remove_event_callback(&CategoryDock::frontendEventTrampoline, this);
 }
 
@@ -404,6 +423,15 @@ void CategoryDock::wirePromptWidget()
 {
 	connect(promptWidget_, &PromptWidget::responded, this, [this](bool acceptAction, bool dontAskAgain) {
 		stateMachine_.respondToPrompt(acceptAction, dontAskAgain);
+		syncPromptWidgetVisibility();
+		refreshPresentationIfVisible();
+		updateCountdownTimerState();
+	});
+
+	// The no-game-while-live prompt has three answers of its own.
+	connect(promptWidget_, &PromptWidget::noGameResponded, this, [this](core::NoGameChoice choice) {
+		stateMachine_.respondNoGame(choice);
+		syncPromptWidgetVisibility();
 		refreshPresentationIfVisible();
 		updateCountdownTimerState();
 	});
@@ -567,6 +595,7 @@ void CategoryDock::attachTwitchClient(const QString &accessToken, const QString 
 								 pluginConfig_.timing().minPatchSpacingS, this);
 	categoryLookup_ = std::make_unique<twitch::TwitchCategoryLookup>(*twitchClient_, this);
 	channelClient_ = std::make_unique<twitch::TwitchChannelClient>(*twitchClient_, this);
+	liveCheckInFlight_ = false; // A read pending on the old client will never be answered.
 
 	// CategoryResolver tier 3 and the coordinator's fallback-category
 	// lookup share this one TwitchCategoryLookup instance - see
@@ -674,6 +703,16 @@ void CategoryDock::hideEvent(QHideEvent *event)
 
 void CategoryDock::onSwitchIn(const detection::InstalledGame &game)
 {
+	dispatchSwitch(game, /*reassert=*/false);
+}
+
+void CategoryDock::onReapplyCategory(const detection::InstalledGame &game)
+{
+	dispatchSwitch(game, /*reassert=*/true);
+}
+
+void CategoryDock::dispatchSwitch(const detection::InstalledGame &game, bool reassert)
+{
 	// "Only while live" policy layer (DetectionStateMachine.h: owned by
 	// PluginConfig/the coordinator, layered ON TOP of the state machine -
 	// onSwitchIn itself is not gated on live-ness by design, since an
@@ -711,7 +750,7 @@ void CategoryDock::onSwitchIn(const detection::InstalledGame &game)
 	// resolve -> external-writer-guard -> PATCH -> marker sequence.
 	// `live` gates only the marker step there; coordinator_ itself
 	// no-ops (with a log line) if Twitch isn't connected yet.
-	coordinator_.switchIn(game, stateMachine_.isLive());
+	coordinator_.switchIn(game, stateMachine_.isLive(), reassert);
 }
 
 void CategoryDock::onApplyFallback()
@@ -755,9 +794,19 @@ void CategoryDock::onPrompt(core::PromptKind kind, const detection::InstalledGam
 	QString targetCategory;
 	if (kind == core::PromptKind::CreativeApp)
 		targetCategory = toQString(resolver_.aliasCategoryFor(relevantGame));
-	else if (kind == core::PromptKind::NoGameIdle)
+	else if (kind == core::PromptKind::NoGameIdle || kind == core::PromptKind::GameClosed)
 		targetCategory = toQString(pluginConfig_.fallbackCategoryName());
 	promptWidget_->showPrompt(kind, gameName, currentCategory, targetCategory);
+
+	// The one prompt worth an out-of-OBS nudge: the streamer is live, in a
+	// game or on another screen, and may never look at the dock. The card
+	// is non-activating and a click takes them to the prompt itself.
+	if (kind == core::PromptKind::GameClosed) {
+		toast_->showToast(QStringLiteral("SignalBox: no game detected"),
+				   QStringLiteral("You're live in \"%1\". Stream ending, switching to Just Chatting, or "
+						  "waiting for a game? Click to answer in OBS.")
+					   .arg(currentCategory));
+	}
 	updateCountdownTimerState();
 	refreshPresentationIfVisible();
 }
@@ -890,6 +939,32 @@ void CategoryDock::syncPromptWidgetVisibility()
 	// exists for exactly this and previously had zero call sites.
 	if (!stateMachine_.promptOutstanding() && promptWidget_->isVisible())
 		promptWidget_->dismissWithoutResponse();
+
+	// The notification card lives exactly as long as the no-game prompt.
+	const bool noGamePromptUp =
+		stateMachine_.promptOutstanding() && stateMachine_.outstandingPromptKind() == core::PromptKind::GameClosed;
+	if (!noGamePromptUp && toast_)
+		toast_->dismiss();
+}
+
+void CategoryDock::revealPrompt()
+{
+	if (toast_)
+		toast_->dismiss();
+	for (QWidget *w = this; w; w = w->parentWidget()) {
+		if (auto *dockWidget = qobject_cast<QDockWidget *>(w)) {
+			dockWidget->setVisible(true);
+			dockWidget->raise(); // Surfaces it if it is a background tab.
+			break;
+		}
+	}
+	// A click on the card is the user's own action, so bringing OBS forward
+	// here is the intended result, not a focus steal.
+	if (QWidget *top = window()) {
+		top->show();
+		top->raise();
+		top->activateWindow();
+	}
 }
 
 void CategoryDock::maybeValidateTwitchToken()
@@ -914,14 +989,22 @@ void CategoryDock::maybeValidateTwitchToken()
 	twitchAuth_->validate(currentTokens_.accessToken);
 }
 
-void CategoryDock::syncLiveCategoryFromChannel()
+void CategoryDock::syncLiveCategoryFromChannel(bool logAsGoLive)
 {
-	if (!channelClient_)
+	if (!channelClient_) {
+		if (logAsGoLive)
+			obs_log(LOG_INFO, "live category at go-live: not read (Twitch is not connected)");
 		return; // Not connected yet - nothing to ask; see header doc comment.
+	}
 
-	channelClient_->getChannelInfo([this](std::optional<core::ChannelSnapshot> snapshot) {
-		if (!snapshot)
+	channelClient_->getChannelInfo([this, logAsGoLive](std::optional<core::ChannelSnapshot> snapshot) {
+		if (!snapshot) {
+			if (logAsGoLive)
+				obs_log(LOG_INFO, "live category at go-live: could not be read");
 			return; // Couldn't verify - never overwrite a known value with a guess.
+		}
+		if (logAsGoLive)
+			obs_log(LOG_INFO, "live category at go-live: \"%s\"", toQString(snapshot->gameName).toUtf8().constData());
 
 		// BOTH, not just the state machine. This used to feed
 		// onLiveCategoryKnown() alone, which gives Trigger A its
@@ -936,7 +1019,62 @@ void CategoryDock::syncLiveCategoryFromChannel()
 
 void CategoryDock::syncLiveCategoryOnGoLive()
 {
-	syncLiveCategoryFromChannel();
+	syncLiveCategoryFromChannel(/*logAsGoLive=*/true);
+}
+
+void CategoryDock::maybeVerifyLiveCategory()
+{
+	if (!stateMachine_.takeLiveCategoryCheckDue())
+		return; // Not live, or no slot due yet.
+
+	if (!channelClient_) {
+		obs_log(LOG_DEBUG, "live category check: skipped (Twitch is not connected)");
+		return;
+	}
+	if (liveCheckInFlight_) {
+		obs_log(LOG_DEBUG, "live category check: skipped (previous read still in flight)");
+		return;
+	}
+
+	liveCheckInFlight_ = true;
+	channelClient_->getChannelInfo([this](std::optional<core::ChannelSnapshot> snapshot) {
+		liveCheckInFlight_ = false;
+
+		std::optional<std::wstring> liveName;
+		if (snapshot) {
+			liveName = snapshot->gameName;
+			liveCategory_ = toQString(snapshot->gameName);
+		}
+		const core::VerifyResult result = stateMachine_.onLiveCategoryVerified(liveName);
+
+		const QString live = toQString(result.liveCategory);
+		const QString expected = toQString(result.expectedCategory);
+		if (result.outcome == core::VerifyOutcome::Reapplied) {
+			obs_log(LOG_INFO, "live category was \"%s\", re-applied \"%s\"%s", live.toUtf8().constData(),
+				expected.toUtf8().constData(),
+				result.withinGoLiveWindow ? " (possible multistream/external override)" : "");
+		} else {
+			const char *what = "unknown";
+			switch (result.outcome) {
+			case core::VerifyOutcome::NotLive: what = "not live"; break;
+			case core::VerifyOutcome::NotVerifiable: what = "could not read the channel"; break;
+			case core::VerifyOutcome::NoActiveGame: what = "no confirmed game"; break;
+			case core::VerifyOutcome::Matches: what = "matches the running game"; break;
+			case core::VerifyOutcome::SkippedLocked: what = "differs, left alone (manual lock)"; break;
+			case core::VerifyOutcome::SkippedHold: what = "differs, left alone (stream-ending hold)"; break;
+			case core::VerifyOutcome::SkippedPaused: what = "differs, left alone (automation paused)"; break;
+			case core::VerifyOutcome::SkippedPrompt: what = "differs, left alone (waiting on your answer)"; break;
+			case core::VerifyOutcome::SkippedKept: what = "differs, left alone (you chose it)"; break;
+			case core::VerifyOutcome::SkippedRecentSwitch: what = "differs, left alone (just switched)"; break;
+			case core::VerifyOutcome::Reapplied: break;
+			}
+			obs_log(LOG_DEBUG, "live category check: %s (channel: \"%s\", game: \"%s\")", what,
+				live.toUtf8().constData(), expected.toUtf8().constData());
+		}
+
+		syncPromptWidgetVisibility();
+		refreshPresentationIfVisible();
+	});
 }
 
 void CategoryDock::refreshDockSections()
@@ -1104,7 +1242,10 @@ void CategoryDock::refreshStatusLabels()
 			const auto grace = stateMachine_.graceGame();
 			const QString held = grace ? toQString(grace->displayName) : QString();
 
-			if (willAsk) {
+			if (willAsk && !grace) {
+				countdownLabel_->setText(
+					QStringLiteral("No game detected - checking in with you in %1s").arg(*remaining));
+			} else if (willAsk) {
 				countdownLabel_->setText(
 					QStringLiteral("No game detected - asking in %1s").arg(*remaining));
 			} else if (!held.isEmpty()) {
@@ -1217,6 +1358,7 @@ void CategoryDock::onJustChattingClicked()
 	// the same one every other category change takes: the guard's
 	// lastAppliedCategoryId_ updates, and liveCategory_/the activity log
 	// get the real applied name rather than the one we asked for.
+	stateMachine_.noteUserCategoryChoice(); // Their choice: verification must not undo it a minute later.
 	coordinator_.applyFallback(category, stateMachine_.isLive());
 }
 
@@ -1513,6 +1655,7 @@ void CategoryDock::onUndoRequested(std::size_t logIndex)
 	// A failure leaves the entry (and its Undo button) exactly as it
 	// was; the coordinator's own ActivityCallback already logged why.
 	const std::wstring previousCategory = entry.previousCategory;
+	stateMachine_.noteUserCategoryChoice(); // An Undo is the user's own choice too.
 	coordinator_.applyFallback(previousCategory, stateMachine_.isLive(), [this, logIndex, previousCategory](bool success) {
 		if (!success)
 			return;

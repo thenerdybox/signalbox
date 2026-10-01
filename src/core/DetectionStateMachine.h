@@ -36,13 +36,41 @@
  * #1) - Listener::onPrompt* must only ever result in passive dock/toast
  * state, never a blocking dialog. An unanswered prompt times out
  * (TimingConstants::promptTimeoutS) to the safe default: hold the last
- * category (ADDENDUM hard constraint #2). Concretely: this class calls
- * Listener::onApplyFallback() from exactly ONE place - an explicit accept
- * response to a GameClosed prompt (respondToPrompt(true, ...)). It is
- * NEVER called from onTick()'s timeout handling, never from a disabled-
- * prompts path, and never from a "don't ask again" path. Ignoring the
- * prompt - or never seeing it because prompts/live-ness say don't show
- * it - always means "hold", by construction, not by convention.
+ * category (ADDENDUM hard constraint #2). Concretely: this class never
+ * calls Listener::onApplyFallback() on its own initiative - only from an
+ * explicit answer to a prompt (the "Switch to Just Chatting" choice of
+ * the no-game prompt, or Trigger D's accept). It is NEVER called from
+ * onTick()'s timeout handling, never from a disabled-prompts path, and
+ * never from a "don't ask again" path. Ignoring a prompt - or never
+ * seeing it because prompts/live-ness say don't show it - never changes
+ * the category by itself, by construction, not by convention.
+ *
+ * THE NO-GAME-WHILE-LIVE PROMPT (Trigger B, PromptKind::GameClosed) is
+ * the one prompt whose timeout does NOT mean "stop asking". It is raised
+ * while live whenever nothing is detected: when the grace window after a
+ * game closes expires, and again when a stream starts with nothing
+ * running (after noGameSnoozeS, so a "Starting soon" scene is not
+ * interrupted at the instant it goes live). It offers three answers - see
+ * NoGameChoice and respondNoGame(): stream ending (the existing hold),
+ * switch to the fallback category (applied once, then quiet), or waiting
+ * for a game (snooze: keep the category, keep scanning, ask again in
+ * noGameSnoozeS if still nothing). Leaving it unanswered counts as
+ * "waiting" - an unattended stream keeps being asked, and a permanent
+ * silent hold is reserved for the explicit "stream ending" answer. A
+ * game confirming at any point dismisses it and clears the schedule.
+ *
+ * LIVE CATEGORY VERIFICATION: the channel's category can be changed by
+ * something other than SignalBox while a game is running (multistream
+ * relays push their own saved category at go-live, or the user edits it
+ * in the Twitch dashboard). takeLiveCategoryCheckDue() is the schedule
+ * (quick checks shortly after go-live, then every
+ * liveCategoryCheckIntervalS) and onLiveCategoryVerified() is the
+ * decision: with a confirmed game ACTIVE and the channel showing a
+ * different category, it asks the listener to re-apply the game's
+ * category. It never does so while manually locked, while the
+ * stream-ending hold is on, while automation is paused or frozen, while
+ * a go-live prompt is open, after the user explicitly kept or chose a
+ * category, or for a prompt-only (creative) app. See VerifyOutcome.
  *
  * TRIGGER A GATES THE SWITCH, IT DOES NOT FOLLOW IT: the first confirmed
  * game since going live (or since the live category last became known)
@@ -185,6 +213,36 @@ enum class PromptKind {
 	NoGameIdle,     // Trigger D: nothing detected for noGameIdlePromptS. NOT gated on live-ness.
 };
 
+// The three answers to the no-game-while-live prompt (PromptKind::GameClosed).
+enum class NoGameChoice {
+	StreamEnding, // Begin the stream-ending hold; stop asking until a game starts or the user clears it.
+	JustChatting, // Apply the fallback category once, then stop asking until a game comes and goes.
+	Waiting,      // Updating / loading / installing: keep the category, keep scanning, ask again later.
+};
+
+// What a live category verification concluded - see
+// DetectionStateMachine::onLiveCategoryVerified().
+enum class VerifyOutcome {
+	NotLive,             // Offline: nothing to verify.
+	NotVerifiable,       // The read failed (nullopt) - never treated as a mismatch or a match.
+	NoActiveGame,        // No confirmed (non-creative) game to compare against.
+	Matches,             // The channel shows the running game's category.
+	SkippedLocked,       // Manual lock: never re-apply.
+	SkippedHold,         // Stream-ending hold: never re-apply.
+	SkippedPaused,       // Flap breaker / external-override freeze.
+	SkippedPrompt,       // A go-live mismatch prompt is open; the user is being asked.
+	SkippedKept,         // The user explicitly kept or chose a category for this game.
+	SkippedRecentSwitch, // SignalBox changed the category moments ago; the read may be stale.
+	Reapplied,           // Mismatch found; the game's category was re-requested.
+};
+
+struct VerifyResult {
+	VerifyOutcome outcome = VerifyOutcome::NotLive;
+	std::wstring liveCategory;       // What the channel showed (empty if not verifiable).
+	std::wstring expectedCategory;   // The running game's name (empty if no game).
+	bool withinGoLiveWindow = false; // Reapplied within goLiveOverrideWindowS of going live.
+};
+
 // Listener is how the state machine asks for side effects without
 // performing them itself. All calls happen on the thread that owns the
 // DetectionStateMachine instance (see class comment - intended to be the
@@ -200,6 +258,16 @@ public:
 		// responsible for CategoryResolver mapping, MIN_PATCH_SPACING_S
 		// pacing, and the redundancy guard (DESIGN.md 2.2, 3.4).
 		virtual void onSwitchIn(const detection::InstalledGame &game) = 0;
+
+		// Re-assert the category of a game that is already confirmed
+		// ACTIVE because verification found the channel showing
+		// something else. Distinct from onSwitchIn() because the caller
+		// must NOT treat "the channel no longer shows what we last set"
+		// as an unknown outside writer here - this class has just
+		// established that on purpose, and standing down would defeat the
+		// point. Defaults to onSwitchIn() so listeners with no such guard
+		// need not care.
+		virtual void onReapplyCategory(const detection::InstalledGame &game) { onSwitchIn(game); }
 
 		// Request the fallback category be applied. Called from exactly
 		// one place: an explicit accept response to a GameClosed prompt
@@ -263,6 +331,46 @@ public:
 	// class comment's PERFORMANCE note).
 	void onTick();
 
+	// --- Live category verification (see the class comment) -------------
+	// True at most once per scheduled slot while live: the owner of the
+	// timer asks this on its heartbeat and, when it returns true, reads
+	// the channel's category and hands the result to
+	// onLiveCategoryVerified(). Returning true advances the schedule, so
+	// a slow or failed read is not retried until the next slot (the
+	// Twitch client's own backoff stays in charge of the wire).
+	bool takeLiveCategoryCheckDue();
+
+	// liveCategory is std::nullopt when the read failed. Feeds the
+	// comparison basis, then decides whether to re-apply; see VerifyOutcome.
+	VerifyResult onLiveCategoryVerified(std::optional<std::wstring> liveCategory);
+
+	// The coordinator's "a PATCH succeeded" feedback. Updates the live
+	// category basis exactly like onLiveCategoryKnown(), and additionally
+	// remembers the resolved category name when the PATCH was for the
+	// running game, so verification compares against the name Twitch
+	// actually holds (aliases, user overrides) and not only the raw
+	// display name.
+	void onCategoryApplied(const std::wstring &categoryName);
+
+	// The user changed the category themselves through SignalBox (Just
+	// Chatting button, Undo). Verification leaves that choice alone until
+	// a different game confirms or the next stream starts.
+	void noteUserCategoryChoice();
+
+	// Optional: extra name the running game is known to map to on Twitch
+	// (user override or alias table). Returns empty for none.
+	using ExpectedCategoryProvider = std::function<std::wstring(const detection::InstalledGame &)>;
+	void setExpectedCategoryProvider(ExpectedCategoryProvider provider);
+
+	// Test seam: replaces std::chrono::steady_clock::now() for every
+	// time-based decision in this class. Not used by the plugin itself.
+	using TimeSource = std::function<std::chrono::steady_clock::time_point()>;
+	void setTimeSourceForTesting(TimeSource source);
+
+	// Answer to the no-game-while-live prompt. Ignored unless that prompt
+	// is the outstanding one.
+	void respondNoGame(NoGameChoice choice);
+
 	// User answered a prompt raised via Listener::onPrompt. Maps
 	// PromptWidget's three buttons onto this two-argument signature as
 	// follows (see PromptWidget.h for the exact button wiring):
@@ -291,6 +399,10 @@ public:
 	// dontAskAgainThisStream suppresses that PromptKind for the rest of
 	// the current stream (reset on the next setLive(true)). A call with
 	// no prompt outstanding is ignored.
+	//   GameClosed also has respondNoGame() with its three real answers;
+	//   through this signature accept maps to JustChatting, a plain
+	//   decline to Waiting, and dontAskAgainThisStream stops the question
+	//   for the stream.
 	void respondToPrompt(bool acceptAction, bool dontAskAgainThisStream = false);
 
 	// DESIGN.md 3.5: external writer detected (GET /helix/channels
@@ -405,15 +517,24 @@ private:
 	void raiseGoLiveMismatch(const detection::InstalledGame &game);
 	void maybeRaiseGoLiveMismatch();
 	void recordAutomatedChange();
-	void pruneOldChanges(Clock::time_point now);
+	void pruneOldChanges(Clock::time_point at);
 	bool suspended() const; // manualLock_ || automationPaused_ || streamEndingHold_ (NOT ExternalOverride).
+	Clock::time_point now() const;
+
+	// No-game-while-live prompt plumbing.
+	bool canAskNoGame() const;
+	void raiseNoGamePrompt(Clock::time_point at, const std::optional<detection::InstalledGame> &relevant);
+	void snoozeNoGame(Clock::time_point at);
+	void serviceNoGameLive(Clock::time_point at);
+	std::uint32_t liveCheckIntervalS() const;
+	void noteSwitchRequested(bool forGame);
 
 	// True when there is genuinely nothing going on: no confirmed game,
 	// no candidate accumulating polls, no grace window, no outstanding
 	// prompt, and automation not suspended or frozen. The precondition
 	// for Trigger D's idle clock to run at all - see onTick().
 	bool nothingIsHappening() const;
-	void serviceIdlePrompt(Clock::time_point now);
+	void serviceIdlePrompt(Clock::time_point at);
 
 	Listener &listener_;
 	TimingConstants timing_;
@@ -462,6 +583,20 @@ private:
 	// comment's "COMPARING" note. Empty until onLiveCategoryKnown() is
 	// called at least once.
 	std::wstring currentLiveCategory_;
+
+	// --- Live category verification state ---
+	std::optional<Clock::time_point> liveSince_;
+	std::optional<Clock::time_point> quickCheckAt_[2];
+	std::optional<Clock::time_point> nextPeriodicCheckAt_;
+	std::wstring appliedCategoryName_; // Resolved name of the last PATCH made for the active game.
+	bool lastRequestWasGame_ = false;  // Whether the most recent switch request was a game (not a fallback).
+	bool reapplySuppressed_ = false;   // The user chose a category; leave it until the game changes.
+	std::optional<Clock::time_point> lastSwitchRequestAt_;
+	ExpectedCategoryProvider expectedCategoryProvider_;
+	TimeSource timeSource_;
+
+	// --- No-game-while-live prompt state ---
+	std::optional<Clock::time_point> noGameAskAt_; // When to (next) ask, if still nothing is detected.
 
 	// Flap breaker rolling window (DESIGN.md 2.2). Bounded by
 	// flapBreakerWindowS via pruneOldChanges(); never grows unbounded.

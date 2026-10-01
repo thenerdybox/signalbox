@@ -9,6 +9,8 @@
 
 #include "DetectionStateMachine.h"
 
+#include <algorithm>
+
 #include "CategoryResolver.h" // CategoryResolver::normalize() - see normalizedEquals()'s doc comment (item 8 fix).
 
 namespace signalbox::core {
@@ -22,6 +24,27 @@ DetectionStateMachine::DetectionStateMachine(Listener &listener, const TimingCon
 void DetectionStateMachine::setTiming(const TimingConstants &timing)
 {
 	timing_ = timing;
+}
+
+void DetectionStateMachine::setTimeSourceForTesting(TimeSource source)
+{
+	timeSource_ = std::move(source);
+}
+
+DetectionStateMachine::Clock::time_point DetectionStateMachine::now() const
+{
+	return timeSource_ ? timeSource_() : Clock::now();
+}
+
+void DetectionStateMachine::setExpectedCategoryProvider(ExpectedCategoryProvider provider)
+{
+	expectedCategoryProvider_ = std::move(provider);
+}
+
+void DetectionStateMachine::noteSwitchRequested(bool forGame)
+{
+	lastSwitchRequestAt_ = now();
+	lastRequestWasGame_ = forGame;
 }
 
 bool DetectionStateMachine::sameGame(const detection::InstalledGame &a, const detection::InstalledGame &b)
@@ -75,18 +98,18 @@ bool DetectionStateMachine::nothingIsHappening() const
 	return !suspended();
 }
 
-void DetectionStateMachine::pruneOldChanges(Clock::time_point now)
+void DetectionStateMachine::pruneOldChanges(Clock::time_point at)
 {
 	const auto window = std::chrono::seconds(timing_.flapBreakerWindowS);
-	while (!changeTimestamps_.empty() && (now - changeTimestamps_.front()) > window)
+	while (!changeTimestamps_.empty() && (at - changeTimestamps_.front()) > window)
 		changeTimestamps_.pop_front();
 }
 
 void DetectionStateMachine::recordAutomatedChange()
 {
-	const auto now = Clock::now();
-	changeTimestamps_.push_back(now);
-	pruneOldChanges(now);
+	const auto at = now();
+	changeTimestamps_.push_back(at);
+	pruneOldChanges(at);
 	if (changeTimestamps_.size() > timing_.flapBreakerN && !automationPaused_) {
 		automationPaused_ = true;
 		listener_.onAutomationPaused(L"Category changes paused — this game appears unstable. Resume?");
@@ -167,6 +190,13 @@ void DetectionStateMachine::confirmPendingCandidate()
 	noGameIdleAsked_ = false;
 	idleSince_.reset();
 
+	// ...and a game confirming ends the no-game-while-live question too:
+	// any outstanding prompt of that kind is moot and the re-ask schedule
+	// is over (it re-arms when this game goes away again).
+	noGameAskAt_.reset();
+	if (promptOutstanding_ && promptKind_ == PromptKind::GameClosed)
+		promptOutstanding_ = false;
+
 	if (cameFromGraceSameGame) {
 		// Crash-then-relaunch inside the grace window: the category was
 		// never touched while GRACE was waiting, so returning to ACTIVE
@@ -182,6 +212,12 @@ void DetectionStateMachine::confirmPendingCandidate()
 
 	const bool changingGame = !activeGame_ || !sameGame(*activeGame_, game);
 	const State previousState = state_;
+	if (changingGame) {
+		// A different game is a fresh decision: forget the previous game's
+		// resolved category and any "leave my choice alone" from the user.
+		appliedCategoryName_.clear();
+		reapplySuppressed_ = false;
+	}
 
 	// TRIGGER C - creative/dev apps are offered, never applied.
 	//
@@ -259,6 +295,7 @@ void DetectionStateMachine::confirmPendingCandidate()
 
 	if (changingGame) {
 		if (!suspended()) {
+			noteSwitchRequested(true);
 			listener_.onSwitchIn(game);
 			recordAutomatedChange();
 
@@ -302,7 +339,7 @@ void DetectionStateMachine::onTrackedProcessExited(detection::ExitReason reason,
 	graceReason_ = reason;
 	const auto graceSeconds =
 		(reason == detection::ExitReason::Crash) ? timing_.crashGraceS : timing_.cleanExitGraceS;
-	graceDeadline_ = Clock::now() + std::chrono::seconds(graceSeconds);
+	graceDeadline_ = now() + std::chrono::seconds(graceSeconds);
 	promptOutstanding_ = false;
 	pendingCandidate_.reset();
 	pendingConfirmPolls_ = 0;
@@ -315,31 +352,35 @@ void DetectionStateMachine::onTick()
 	if (state_ == State::ExternalOverride)
 		return;
 
-	const auto now = Clock::now();
+	const auto at = now();
 
 	if (state_ == State::Grace) {
 		if (promptOutstanding_) {
-			if (now >= promptDeadline_) {
-				// TIMEOUT -> HOLD, unconditionally (ADDENDUM hard
-				// constraint #2). This is the only outcome of a
-				// GameClosed timeout, regardless of any other setting.
+			if (at >= promptDeadline_) {
+				// TIMEOUT -> keep the category and keep asking. The
+				// category is never touched (ADDENDUM hard constraint #2
+				// stands), but an unattended stream must not turn one
+				// unanswered question into a permanent silence: the
+				// no-game prompt counts a timeout as "waiting for a
+				// game" and comes back after the snooze interval. A
+				// permanent hold is only ever the user's explicit
+				// "stream ending" answer.
 				promptOutstanding_ = false;
-				listener_.onLogEntry(L"No response — holding \"" + currentLiveCategory_ + L"\"",
+				snoozeNoGame(at);
+				listener_.onLogEntry(L"No response — keeping \"" + currentLiveCategory_ +
+							      L"\" and still watching for a game; will ask again in " +
+							      std::to_wstring(timing_.noGameSnoozeS) + L"s",
 						      currentLiveCategory_);
 				state_ = State::Fallback;
 				graceGame_.reset();
 			}
-		} else if (now >= graceDeadline_) {
+		} else if (at >= graceDeadline_) {
 			// !streamEndingHold_ and not !suspended(): a manual lock
 			// deliberately still asks (the answer is useful even when
 			// the action is suppressed), but a stream-ending hold is a
 			// statement that the user is done being asked things.
-			if (live_ && promptsEnabled_ && !gameClosedSuppressed_ && !streamEndingHold_ && graceGame_) {
-				promptOutstanding_ = true;
-				promptKind_ = PromptKind::GameClosed;
-				promptRelevantGame_ = graceGame_;
-				promptDeadline_ = now + std::chrono::seconds(timing_.promptTimeoutS);
-				listener_.onPrompt(PromptKind::GameClosed, *graceGame_);
+			if (canAskNoGame() && graceGame_) {
+				raiseNoGamePrompt(at, graceGame_);
 			} else {
 				// Not live, prompts disabled, or "don't ask again this
 				// stream" was set on a previous GameClosed response -
@@ -353,14 +394,28 @@ void DetectionStateMachine::onTick()
 		return;
 	}
 
-	if (promptOutstanding_ && promptKind_ == PromptKind::GoLiveMismatch && now >= promptDeadline_) {
-		// GoLiveMismatch timeout: also always holds - keep whatever is
-		// currently live, do not switch.
+	if (promptOutstanding_ && promptKind_ == PromptKind::GameClosed && at >= promptDeadline_) {
+		// The re-ask (or go-live ask) went unanswered: same outcome as the
+		// grace-window one above - waiting, not holding.
+		promptOutstanding_ = false;
+		snoozeNoGame(at);
+		listener_.onLogEntry(L"No response — keeping \"" + currentLiveCategory_ +
+					      L"\" and still watching for a game; will ask again in " +
+					      std::to_wstring(timing_.noGameSnoozeS) + L"s",
+				      currentLiveCategory_);
+	}
+
+	if (promptOutstanding_ && promptKind_ == PromptKind::GoLiveMismatch && at >= promptDeadline_) {
+		// GoLiveMismatch timeout: keep whatever is currently live for now,
+		// do not switch from here. This is NOT a permanent decision: the
+		// live category verification re-applies the running game's
+		// category on its next pass (unless the user explicitly kept the
+		// category), so an unattended go-live mismatch still gets fixed.
 		promptOutstanding_ = false;
 		listener_.onLogEntry(L"No response — keeping \"" + currentLiveCategory_ + L"\"", currentLiveCategory_);
 	}
 
-	if (promptOutstanding_ && promptKind_ == PromptKind::CreativeApp && now >= promptDeadline_) {
+	if (promptOutstanding_ && promptKind_ == PromptKind::CreativeApp && at >= promptDeadline_) {
 		// Trigger C timeout holds too, and holding here is not a
 		// consolation outcome - it is the correct one. An unanswered
 		// creative-app prompt most likely means the app is open and the
@@ -371,7 +426,7 @@ void DetectionStateMachine::onTick()
 				      currentLiveCategory_);
 	}
 
-	if (promptOutstanding_ && promptKind_ == PromptKind::NoGameIdle && now >= promptDeadline_) {
+	if (promptOutstanding_ && promptKind_ == PromptKind::NoGameIdle && at >= promptDeadline_) {
 		// Trigger D times out to a hold like everything else. It says
 		// nothing about the category here because, unlike the other
 		// three, this one can fire while offline, where
@@ -381,18 +436,108 @@ void DetectionStateMachine::onTick()
 		listener_.onLogEntry(L"No response — leaving your category alone, still watching for a game", L"");
 	}
 
-	serviceIdlePrompt(now);
+	serviceNoGameLive(at);
+	serviceIdlePrompt(at);
 }
 
-void DetectionStateMachine::serviceIdlePrompt(Clock::time_point now)
+// --- No-game-while-live prompt --------------------------------------------
+
+bool DetectionStateMachine::canAskNoGame() const
 {
+	return live_ && promptsEnabled_ && !gameClosedSuppressed_ && !streamEndingHold_;
+}
+
+void DetectionStateMachine::raiseNoGamePrompt(Clock::time_point at, const std::optional<detection::InstalledGame> &relevant)
+{
+	noGameAskAt_.reset();
+	promptOutstanding_ = true;
+	promptKind_ = PromptKind::GameClosed;
+	promptRelevantGame_ = relevant;
+	promptDeadline_ = at + std::chrono::seconds(timing_.noGameLivePromptTimeoutS);
+	listener_.onPrompt(PromptKind::GameClosed, relevant ? *relevant : detection::InstalledGame{});
+}
+
+void DetectionStateMachine::snoozeNoGame(Clock::time_point at)
+{
+	noGameAskAt_ = at + std::chrono::seconds(timing_.noGameSnoozeS);
+}
+
+void DetectionStateMachine::serviceNoGameLive(Clock::time_point at)
+{
+	if (!noGameAskAt_)
+		return;
+	if (!live_) {
+		noGameAskAt_.reset();
+		return;
+	}
+	if (!canAskNoGame())
+		return; // Stays armed: a hold being cleared re-arms it explicitly, prompts re-enabled just resumes.
+	if (promptOutstanding_ || activeGame_ || pendingCandidate_ || state_ == State::Grace)
+		return; // Something is happening - the question is moot or already being asked.
+	if (at < *noGameAskAt_)
+		return;
+	raiseNoGamePrompt(at, std::nullopt);
+}
+
+void DetectionStateMachine::respondNoGame(NoGameChoice choice)
+{
+	if (!promptOutstanding_ || promptKind_ != PromptKind::GameClosed)
+		return;
+
+	promptOutstanding_ = false;
+	const auto at = now();
+
+	switch (choice) {
+	case NoGameChoice::StreamEnding:
+		noGameAskAt_.reset();
+		beginStreamEndingHold(); // Logs, and drops anything still outstanding.
+		break;
+	case NoGameChoice::JustChatting:
+		noGameAskAt_.reset();
+		if (!suspended()) {
+			// An explicit answer to a question that names the category,
+			// so deliberately NOT gated on fallbackEnabled_ (same reasoning
+			// as Trigger D's accept in respondToPrompt()).
+			noteSwitchRequested(false);
+			listener_.onApplyFallback();
+			recordAutomatedChange();
+		} else {
+			listener_.onLogEntry(L"Automatic switching is off — leaving \"" + currentLiveCategory_ +
+						      L"\" as it is",
+					      currentLiveCategory_);
+		}
+		break;
+	case NoGameChoice::Waiting:
+		snoozeNoGame(at);
+		listener_.onLogEntry(L"Waiting for a game — keeping \"" + currentLiveCategory_ + L"\", will ask again in " +
+					      std::to_wstring(timing_.noGameSnoozeS) + L"s if nothing is running",
+				      currentLiveCategory_);
+		break;
+	}
+
+	if (state_ == State::Grace) {
+		state_ = State::Fallback;
+		graceGame_.reset();
+	}
+}
+
+void DetectionStateMachine::serviceIdlePrompt(Clock::time_point at)
+{
+	// While live, the no-game-while-live prompt owns this situation and
+	// Trigger D stands down - two different questions about the same
+	// silence is exactly what the idle prompt's own design avoids.
+	if (live_) {
+		idleSince_.reset();
+		return;
+	}
+
 	if (!nothingIsHappening()) {
 		idleSince_.reset(); // Any activity restarts the full window, never resumes it.
 		return;
 	}
 
 	if (!idleSince_) {
-		idleSince_ = now;
+		idleSince_ = at;
 		return;
 	}
 
@@ -403,7 +548,7 @@ void DetectionStateMachine::serviceIdlePrompt(Clock::time_point now)
 	if (!noGameIdleEnabled_ || !promptsEnabled_ || noGameIdleSuppressed_ || noGameIdleAsked_)
 		return;
 
-	if ((now - *idleSince_) < std::chrono::seconds(timing_.noGameIdlePromptS))
+	if ((at - *idleSince_) < std::chrono::seconds(timing_.noGameIdlePromptS))
 		return;
 
 	// Set BEFORE raising, not in the response handler: every way this
@@ -418,7 +563,7 @@ void DetectionStateMachine::serviceIdlePrompt(Clock::time_point now)
 	// name under "Fix This!" (see CategoryDock::currentGameForFix(),
 	// which asks promptRelevantGame() first).
 	promptRelevantGame_.reset();
-	promptDeadline_ = now + std::chrono::seconds(timing_.promptTimeoutS);
+	promptDeadline_ = at + std::chrono::seconds(timing_.promptTimeoutS);
 	listener_.onPrompt(PromptKind::NoGameIdle, detection::InstalledGame{});
 }
 
@@ -437,7 +582,7 @@ void DetectionStateMachine::raiseCreativeAppPrompt(const detection::InstalledGam
 	promptOutstanding_ = true;
 	promptKind_ = PromptKind::CreativeApp;
 	promptRelevantGame_ = game;
-	promptDeadline_ = Clock::now() + std::chrono::seconds(timing_.promptTimeoutS);
+	promptDeadline_ = now() + std::chrono::seconds(timing_.promptTimeoutS);
 	listener_.onPrompt(PromptKind::CreativeApp, game);
 }
 
@@ -458,7 +603,7 @@ void DetectionStateMachine::raiseGoLiveMismatch(const detection::InstalledGame &
 	promptOutstanding_ = true;
 	promptKind_ = PromptKind::GoLiveMismatch;
 	promptRelevantGame_ = game;
-	promptDeadline_ = Clock::now() + std::chrono::seconds(timing_.promptTimeoutS);
+	promptDeadline_ = now() + std::chrono::seconds(timing_.promptTimeoutS);
 	listener_.onPrompt(PromptKind::GoLiveMismatch, game);
 }
 
@@ -491,6 +636,7 @@ void DetectionStateMachine::respondToPrompt(bool acceptAction, bool dontAskAgain
 			goLiveMismatchSuppressed_ = true;
 		if (acceptAction && game) {
 			if (!suspended()) {
+				noteSwitchRequested(true);
 				listener_.onSwitchIn(*game);
 				recordAutomatedChange();
 				// No log entry - see confirmPendingCandidate()'s
@@ -501,6 +647,10 @@ void DetectionStateMachine::respondToPrompt(bool acceptAction, bool dontAskAgain
 			activeGame_ = game;
 			state_ = State::Active;
 		} else {
+			// An explicit "keep": the user looked at the mismatch and chose
+			// it, so verification must not quietly undo that. (A prompt that
+			// merely timed out never reaches here - that stays correctable.)
+			reapplySuppressed_ = true;
 			listener_.onLogEntry(L"Kept \"" + currentLiveCategory_ + L"\" at go-live", currentLiveCategory_);
 		}
 		return;
@@ -512,6 +662,7 @@ void DetectionStateMachine::respondToPrompt(bool acceptAction, bool dontAskAgain
 
 		if (acceptAction && game) {
 			if (!suspended()) {
+				noteSwitchRequested(true);
 				listener_.onSwitchIn(*game);
 				recordAutomatedChange();
 				// No log entry here either - same reason.
@@ -542,6 +693,7 @@ void DetectionStateMachine::respondToPrompt(bool acceptAction, bool dontAskAgain
 				// respondToPrompt()'s doc comment for why this one
 				// case differs from GameClosed's identical-looking
 				// accept.
+				noteSwitchRequested(false);
 				listener_.onApplyFallback();
 				recordAutomatedChange();
 				// No log entry - onApplyFallback() is
@@ -558,27 +710,22 @@ void DetectionStateMachine::respondToPrompt(bool acceptAction, bool dontAskAgain
 		return;
 	}
 
-	// PromptKind::GameClosed
-	if (dontAskAgainThisStream)
+	// PromptKind::GameClosed - the no-game-while-live prompt. The real
+	// widget answers through respondNoGame(); this two-argument form is
+	// kept so the generic respondToPrompt() contract still covers every
+	// kind. promptOutstanding_ was cleared above, so put it back for the
+	// delegate to find.
+	if (dontAskAgainThisStream) {
 		gameClosedSuppressed_ = true;
-
-	if (acceptAction && fallbackEnabled_) {
-		if (!suspended()) {
-			listener_.onApplyFallback();
-			recordAutomatedChange();
-			// No log entry - applyFallback() is fire-and-forget too.
-		}
-	} else if (acceptAction && !fallbackEnabled_) {
-		// Fallback switching is off by default (project brief) - the
-		// explicit "Switch to <fallback>" response still degrades to a
-		// hold, visibly, rather than silently doing nothing.
-		listener_.onLogEntry(L"Fallback switching is off — holding \"" + currentLiveCategory_ + L"\"",
+		noGameAskAt_.reset();
+		listener_.onLogEntry(L"Holding \"" + currentLiveCategory_ + L"\" — not asking again this stream",
 				      currentLiveCategory_);
-	} else {
-		listener_.onLogEntry(L"Holding \"" + currentLiveCategory_ + L"\"", currentLiveCategory_);
+		state_ = State::Fallback;
+		graceGame_.reset();
+		return;
 	}
-	state_ = State::Fallback;
-	graceGame_.reset();
+	promptOutstanding_ = true;
+	respondNoGame(acceptAction ? NoGameChoice::JustChatting : NoGameChoice::Waiting);
 }
 
 void DetectionStateMachine::onExternalChangeDetected()
@@ -621,6 +768,11 @@ void DetectionStateMachine::resume()
 	pendingCandidate_.reset();
 	pendingConfirmPolls_ = 0;
 	promptOutstanding_ = false;
+	reapplySuppressed_ = false;
+	appliedCategoryName_.clear();
+	noGameAskAt_.reset();
+	if (live_)
+		snoozeNoGame(now()); // Resumed mid-stream with nothing detected yet: ask in a while if still nothing.
 
 	// A fresh start is a fresh idle spell: whatever was asked (or
 	// suppressed) belonged to the picture of the world we just threw
@@ -639,6 +791,7 @@ void DetectionStateMachine::beginStreamEndingHold()
 	if (streamEndingHold_)
 		return; // Already held - don't log the same thing twice.
 	streamEndingHold_ = true;
+	noGameAskAt_.reset(); // "Stop asking" - clearing the hold re-arms it if still nothing is running.
 	// Any outstanding prompt goes with it. The user has just told us what
 	// they are doing, which answers whatever was being asked more
 	// directly than any of the buttons would have.
@@ -651,6 +804,8 @@ void DetectionStateMachine::clearStreamEndingHold()
 	if (!streamEndingHold_)
 		return;
 	streamEndingHold_ = false;
+	if (live_ && !activeGame_ && !pendingCandidate_)
+		snoozeNoGame(now()); // Still nothing running: resume the question after a quiet interval.
 	listener_.onLogEntry(L"Stream-ending hold released — automatic switching is back on", L"");
 }
 
@@ -682,6 +837,27 @@ void DetectionStateMachine::setLive(bool live)
 		creativeAppSuppressed_ = false;
 		noGameIdleSuppressed_ = false;
 		goLiveMismatchAskedThisStream_ = false;
+		reapplySuppressed_ = false;
+
+		// Verification schedule: quick checks to catch a multistream relay
+		// overwriting the category in the first moments, then periodic.
+		const auto at = now();
+		liveSince_ = at;
+		quickCheckAt_[0].reset();
+		quickCheckAt_[1].reset();
+		if (timing_.goLiveQuickChecks) {
+			quickCheckAt_[0] = at + std::chrono::seconds(timing_.goLiveQuickCheckFirstS);
+			quickCheckAt_[1] = at + std::chrono::seconds(timing_.goLiveQuickCheckSecondS);
+		}
+		nextPeriodicCheckAt_ = at + std::chrono::seconds(liveCheckIntervalS());
+
+		// Live with nothing running yet: ask what is going on, but only
+		// after the snooze interval, so a "Starting soon" scene is not
+		// interrupted the moment it goes live. A game confirming first
+		// cancels this.
+		noGameAskAt_.reset();
+		if (!activeGame_ && !pendingCandidate_ && state_ != State::Grace)
+			snoozeNoGame(at);
 
 		// Going live while a stream-ending hold is on means the hold is
 		// stale - it belongs to the stream that already finished (or to
@@ -698,6 +874,12 @@ void DetectionStateMachine::setLive(bool live)
 		// prompt without side effects. Detection/state tracking is
 		// untouched; only the prompt is dismissed.
 		promptOutstanding_ = false;
+
+		liveSince_.reset();
+		quickCheckAt_[0].reset();
+		quickCheckAt_[1].reset();
+		nextPeriodicCheckAt_.reset();
+		noGameAskAt_.reset();
 
 		// Item 8.3 fix: currentLiveCategory_ must not survive into the
 		// next stream. Left alone, the next setLive(true) would run
@@ -737,6 +919,129 @@ void DetectionStateMachine::onLiveCategoryKnown(std::wstring categoryName)
 {
 	currentLiveCategory_ = std::move(categoryName);
 	maybeRaiseGoLiveMismatch(); // Handles the case where this arrives after setLive(true).
+}
+
+void DetectionStateMachine::onCategoryApplied(const std::wstring &categoryName)
+{
+	if (lastRequestWasGame_ && activeGame_)
+		appliedCategoryName_ = categoryName;
+	onLiveCategoryKnown(categoryName);
+}
+
+void DetectionStateMachine::noteUserCategoryChoice()
+{
+	reapplySuppressed_ = true;
+	lastRequestWasGame_ = false;
+}
+
+std::uint32_t DetectionStateMachine::liveCheckIntervalS() const
+{
+	// Floor, so a hand-edited config can never make this a tight poll.
+	return std::max<std::uint32_t>(30, timing_.liveCategoryCheckIntervalS);
+}
+
+bool DetectionStateMachine::takeLiveCategoryCheckDue()
+{
+	if (!live_)
+		return false;
+
+	const auto at = now();
+	bool due = nextPeriodicCheckAt_ && at >= *nextPeriodicCheckAt_;
+	for (auto &quick : quickCheckAt_) {
+		if (quick && at >= *quick) {
+			due = true;
+			quick.reset();
+		}
+	}
+	if (!due)
+		return false;
+
+	// Measured from this check, so a quick check at +60 s pushes the
+	// periodic one out instead of firing it right behind.
+	nextPeriodicCheckAt_ = at + std::chrono::seconds(liveCheckIntervalS());
+	return true;
+}
+
+VerifyResult DetectionStateMachine::onLiveCategoryVerified(std::optional<std::wstring> liveCategory)
+{
+	VerifyResult result;
+	if (!live_) {
+		result.outcome = VerifyOutcome::NotLive;
+		return result;
+	}
+	if (!liveCategory) {
+		result.outcome = VerifyOutcome::NotVerifiable;
+		return result;
+	}
+	result.liveCategory = *liveCategory;
+
+	// The basis only - not onLiveCategoryKnown(), which would also raise
+	// the once-per-stream go-live prompt from a background check.
+	currentLiveCategory_ = *liveCategory;
+
+	if (state_ == State::ExternalOverride) {
+		result.outcome = VerifyOutcome::SkippedPaused;
+		return result;
+	}
+	// A creative/dev app is offered, never applied - that holds for a
+	// correction exactly as it does for the first switch.
+	if (state_ != State::Active || !activeGame_ || isPromptOnly(*activeGame_)) {
+		result.outcome = VerifyOutcome::NoActiveGame;
+		return result;
+	}
+
+	const detection::InstalledGame game = *activeGame_;
+	result.expectedCategory = game.displayName;
+
+	bool matches = normalizedEquals(game.displayName, *liveCategory);
+	if (!matches && !appliedCategoryName_.empty())
+		matches = normalizedEquals(appliedCategoryName_, *liveCategory);
+	if (!matches && expectedCategoryProvider_) {
+		const std::wstring expected = expectedCategoryProvider_(game);
+		matches = !expected.empty() && normalizedEquals(expected, *liveCategory);
+	}
+	if (matches) {
+		result.outcome = VerifyOutcome::Matches;
+		return result;
+	}
+
+	if (manualLock_) {
+		result.outcome = VerifyOutcome::SkippedLocked;
+		return result;
+	}
+	if (streamEndingHold_) {
+		result.outcome = VerifyOutcome::SkippedHold;
+		return result;
+	}
+	if (automationPaused_) {
+		result.outcome = VerifyOutcome::SkippedPaused;
+		return result;
+	}
+	if (promptOutstanding_ && promptKind_ == PromptKind::GoLiveMismatch) {
+		result.outcome = VerifyOutcome::SkippedPrompt;
+		return result;
+	}
+	if (reapplySuppressed_) {
+		result.outcome = VerifyOutcome::SkippedKept;
+		return result;
+	}
+	const auto at = now();
+	if (lastSwitchRequestAt_ && (at - *lastSwitchRequestAt_) < std::chrono::seconds(timing_.minPatchSpacingS)) {
+		result.outcome = VerifyOutcome::SkippedRecentSwitch;
+		return result;
+	}
+
+	result.withinGoLiveWindow =
+		liveSince_ && (at - *liveSince_) < std::chrono::seconds(timing_.goLiveOverrideWindowS);
+
+	noteSwitchRequested(true);
+	listener_.onReapplyCategory(game);
+	recordAutomatedChange(); // A fight with another writer trips the flap breaker instead of looping forever.
+	listener_.onLogEntry(L"Live category was \"" + *liveCategory + L"\" — re-applying \"" + game.displayName + L"\"" +
+				      (result.withinGoLiveWindow ? L" (possible multistream/external override)" : L""),
+			      L"");
+	result.outcome = VerifyOutcome::Reapplied;
+	return result;
 }
 
 void DetectionStateMachine::setPromptsEnabled(bool enabled)
@@ -811,14 +1116,16 @@ std::optional<std::uint32_t> DetectionStateMachine::secondsUntilNextDeadline() c
 		deadline = promptDeadline_;
 	else if (state_ == State::Grace)
 		deadline = graceDeadline_;
+	else if (live_ && noGameAskAt_ && !activeGame_ && !pendingCandidate_ && canAskNoGame())
+		deadline = *noGameAskAt_;
 
 	if (!deadline)
 		return std::nullopt;
 
-	const auto now = Clock::now();
-	if (*deadline <= now)
+	const auto at = now();
+	if (*deadline <= at)
 		return std::uint32_t{0};
-	return static_cast<std::uint32_t>(std::chrono::duration_cast<std::chrono::seconds>(*deadline - now).count());
+	return static_cast<std::uint32_t>(std::chrono::duration_cast<std::chrono::seconds>(*deadline - at).count());
 }
 
 } // namespace signalbox::core

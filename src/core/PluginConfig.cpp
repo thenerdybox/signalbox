@@ -13,6 +13,8 @@
 
 #include "PluginConfig.h"
 
+#include <algorithm>
+
 // obs-module.h (and the util/ headers it pulls in) must come before
 // plugin-support.h in any TU that needs both - see TwitchClient.cpp's
 // include-order comment for why (MSVC C2375 on blogva() otherwise).
@@ -125,6 +127,9 @@ void PluginConfig::load()
 	obs_data_set_default_int(timingObj, "flapBreakerN", defaults.flapBreakerN);
 	obs_data_set_default_int(timingObj, "flapBreakerWindowS", defaults.flapBreakerWindowS);
 	obs_data_set_default_int(timingObj, "promptTimeoutS", defaults.promptTimeoutS);
+	obs_data_set_default_int(timingObj, "liveCategoryCheckIntervalS", defaults.liveCategoryCheckIntervalS);
+	obs_data_set_default_bool(timingObj, "goLiveQuickChecks", defaults.goLiveQuickChecks);
+	obs_data_set_default_int(timingObj, "noGameSnoozeS", defaults.noGameSnoozeS);
 
 	TimingConstants t;
 	t.pollIntervalS = static_cast<std::uint32_t>(obs_data_get_int(timingObj, "pollIntervalS"));
@@ -138,6 +143,14 @@ void PluginConfig::load()
 	t.flapBreakerN = static_cast<std::uint32_t>(obs_data_get_int(timingObj, "flapBreakerN"));
 	t.flapBreakerWindowS = static_cast<std::uint32_t>(obs_data_get_int(timingObj, "flapBreakerWindowS"));
 	t.promptTimeoutS = static_cast<std::uint32_t>(obs_data_get_int(timingObj, "promptTimeoutS"));
+	// Added in 0.2.7. A config.json from an older version has none of these
+	// keys and simply gets the defaults above. Clamped so a hand-edited value
+	// can never turn the check into a tight poll against Twitch.
+	t.liveCategoryCheckIntervalS = std::clamp<std::uint32_t>(
+		static_cast<std::uint32_t>(obs_data_get_int(timingObj, "liveCategoryCheckIntervalS")), 30, 3600);
+	t.goLiveQuickChecks = obs_data_get_bool(timingObj, "goLiveQuickChecks");
+	t.noGameSnoozeS =
+		std::clamp<std::uint32_t>(static_cast<std::uint32_t>(obs_data_get_int(timingObj, "noGameSnoozeS")), 30, 1800);
 	timing_ = t;
 	obs_data_release(timingObj);
 
@@ -230,6 +243,9 @@ void PluginConfig::save()
 	obs_data_set_int(timingObj, "flapBreakerN", timing_.flapBreakerN);
 	obs_data_set_int(timingObj, "flapBreakerWindowS", timing_.flapBreakerWindowS);
 	obs_data_set_int(timingObj, "promptTimeoutS", timing_.promptTimeoutS);
+	obs_data_set_int(timingObj, "liveCategoryCheckIntervalS", timing_.liveCategoryCheckIntervalS);
+	obs_data_set_bool(timingObj, "goLiveQuickChecks", timing_.goLiveQuickChecks);
+	obs_data_set_int(timingObj, "noGameSnoozeS", timing_.noGameSnoozeS);
 	obs_data_set_obj(data, "timing", timingObj);
 	obs_data_release(timingObj);
 
