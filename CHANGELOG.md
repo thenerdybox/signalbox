@@ -5,7 +5,7 @@ Changelog](https://keepachangelog.com/en/1.1.0/) format. This file is the
 single source of truth for release notes — GitHub Releases and the public
 patch-notes page are both generated from it.
 
-## [0.2.7] — 2026-10-01
+## [0.2.7] — 2026-10-06
 
 ### Added
 
@@ -37,6 +37,16 @@ patch-notes page are both generated from it.
   "Stream ending soon") stops it.
 - The log now records the category found at go-live and the result of each
   check.
+
+### Fixed
+
+- **Going live through Restream (or another multistream service) could leave
+  your stream in the wrong category for the whole stream.** SignalBox set the
+  right category before you went live, the service then replaced it with its
+  own saved one at go-live, and if the go-live question went unanswered for 20
+  seconds SignalBox kept the wrong category and never checked again. The
+  re-checks above now put the game's category back within about 15 seconds of
+  going live.
 
 ## [0.2.6] — 2026-08-23
 
