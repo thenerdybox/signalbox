@@ -391,20 +391,17 @@ void RunStateMachineScenarios()
 	detectedA.pid = 4242;
 	detectedA.confidence = Confidence::High;
 
-	// --- Go-live mismatch (Trigger A), fired as a side effect of the
-	// first confirmed switch-in once the live category is known. ---
-	std::printf("-- Confirm + go-live mismatch prompt --\n");
+	// --- A game confirming while live in a different category simply
+	// switches: there is no go-live question. ---
+	std::printf("-- Confirm while live in a mismatched category: plain switch --\n");
 	sm.setLive(true);
 	sm.onLiveCategoryKnown(L"Just Chatting");
 	for (std::uint32_t i = 0; i < timing.confirmPolls; ++i) {
 		sm.onPollResult(detectedA);
 	}
-	Check(sm.promptOutstanding() && sm.outstandingPromptKind() == PromptKind::GoLiveMismatch,
-	      "confirming a game while live-in-mismatch raises GoLiveMismatch, not a silent switch");
-	Check(listener.switchInCount == 0, "no PATCH fires until the prompt is answered");
-
-	sm.respondToPrompt(/*acceptAction=*/true, /*dontAskAgainThisStream=*/false);
-	Check(listener.switchInCount == 1, "\"Set to <game>\" response fires exactly one onSwitchIn");
+	Check(!sm.promptOutstanding(), "confirming a game while live-in-mismatch raises no prompt");
+	Check(listener.promptCount == 0, "and the listener is never asked to show one");
+	Check(listener.switchInCount == 1, "the PATCH fires immediately: exactly one onSwitchIn");
 	Check(sm.state() == State::Active, "state machine is now Active(Path of Exile 2)");
 
 	// --- Crash, then relaunch inside the grace window: anti-flap core -
@@ -441,8 +438,8 @@ void RunStateMachineScenarios()
 	// --- Flap breaker: repeated rapid switches trip automation pause. ---
 	std::printf("-- Flap breaker: crash-looping game trips automation pause --\n");
 	Check(!sm.isAutomationPaused(), "automation not paused yet");
-	// Two switch-ins already happened above (gameA go-live mismatch
-	// accept, once); flapBreakerN=2 means a 3rd automated change within
+	// One switch-in already happened above (gameA confirming while live
+	// in a mismatched category); flapBreakerN=2 means a 3rd automated change within
 	// the window should trip the breaker. Force a couple more confirmed
 	// switches by alternating games (each is a changingGame switch-in).
 	DetectedGame detectedB;
@@ -550,12 +547,12 @@ void RunExitSignalIdentityScenarios()
 }
 
 // ---------------------------------------------------------------------
-// SECTION 2c: Trigger A comparison-basis fixes (item 8).
+// SECTION 2c: go-live mismatch comparison-basis fixes (item 8).
 // ---------------------------------------------------------------------
 
 void RunGoLiveMismatchScenarios()
 {
-	std::printf("\n=== SECTION 2c: Trigger A comparison-basis fixes (item 8) ===\n");
+	std::printf("\n=== SECTION 2c: go-live mismatch comparison-basis fixes (item 8) ===\n");
 
 	TimingConstants timing;
 	timing.confirmPolls = 2;
@@ -565,10 +562,10 @@ void RunGoLiveMismatchScenarios()
 
 	// --- Item 8.1: normalizedEquals uses CategoryResolver::normalize(),
 	// which strips (tm)/(r)/(c) - a Steam-style display name carrying a
-	// (R) glyph must not false-fire Trigger A against Twitch's
+	// (R) glyph must not false-fire a go-live correction against Twitch's
 	// glyph-free category name for the exact same game. ---
 	{
-		std::printf("-- A (R)/(tm)/(c)-only difference does not false-fire Trigger A --\n");
+		std::printf("-- A (R)/(tm)/(c)-only difference does not false-fire a go-live correction --\n");
 		RecordingListener listener;
 		DetectionStateMachine sm(listener, timing);
 		sm.setLive(true);
@@ -588,11 +585,19 @@ void RunGoLiveMismatchScenarios()
 
 	// --- Item 8.3: currentLiveCategory_ does not survive setLive(false) -
 	// a stale basis must never burn the NEXT stream's once-per-stream
-	// prompt budget before the fresh go-live sync arrives. ---
+	// go-live check before the fresh go-live sync arrives. ---
 	{
 		std::printf("-- currentLiveCategory_ does not survive setLive(false) (stale-basis fix) --\n");
-		RecordingListener listener;
-		DetectionStateMachine sm(listener, timing);
+		// onReapplyCategory defaults to onSwitchIn, so count re-applies
+		// separately to tell a correction from the original switch.
+		struct CountingListener : RecordingListener {
+			int reapplyCount = 0;
+			void onReapplyCategory(const InstalledGame &) override { ++reapplyCount; }
+		};
+		TimingConstants noSpacing = timing;
+		noSpacing.minPatchSpacingS = 0; // Real clock here: keep patch spacing out of the way.
+		CountingListener listener;
+		DetectionStateMachine sm(listener, noSpacing);
 		sm.setLive(true);
 		sm.onLiveCategoryKnown(L"Just Chatting");
 
@@ -601,28 +606,29 @@ void RunGoLiveMismatchScenarios()
 		detected.game = game;
 		detected.pid = 1;
 		detected.confidence = Confidence::High;
-		for (std::uint32_t i = 0; i < timing.confirmPolls; ++i)
+		for (std::uint32_t i = 0; i < noSpacing.confirmPolls; ++i)
 			sm.onPollResult(detected);
-		Check(sm.promptOutstanding() && sm.outstandingPromptKind() == PromptKind::GoLiveMismatch,
-		      "mismatch prompt raised this stream (\"Just Chatting\" vs \"Some Game\")");
+		Check(!sm.promptOutstanding() && listener.switchInCount == 1,
+		      "mismatch (\"Just Chatting\" vs \"Some Game\") is switched straight away, no prompt");
 
-		sm.setLive(false); // Stream ends with the prompt still unanswered.
-		Check(!sm.promptOutstanding(), "going offline drops the outstanding prompt");
+		sm.setLive(false);
+		Check(!sm.promptOutstanding(), "going offline leaves no prompt");
 
 		sm.setLive(true); // New stream. If the OLD stale basis ("Just Chatting") survived, this alone
-				   // would immediately re-raise a mismatch prompt against last stream's data,
-				   // before this stream's real sync has even arrived.
-		Check(!sm.promptOutstanding(),
-		      "no stale-basis prompt fires at the next go-live, before the fresh sync arrives");
+				   // would immediately re-apply against last stream's data, before this
+				   // stream's real sync has even arrived.
+		Check(listener.reapplyCount == 0,
+		      "no correction fires against stale data at the next go-live, before the fresh sync arrives");
 
 		// The fresh sync arrives with a REAL mismatch this stream. If the
-		// stale-basis prompt above had wrongly fired (pre-fix), it would
-		// have already burned goLiveMismatchAskedThisStream_ and this
+		// stale-basis correction above had wrongly fired (pre-fix), it
+		// would have already burned goLiveMismatchAskedThisStream_ and this
 		// would incorrectly stay silent.
 		sm.onLiveCategoryKnown(L"Something Else Entirely");
-		Check(sm.promptOutstanding() && sm.outstandingPromptKind() == PromptKind::GoLiveMismatch,
-		      "once the fresh sync arrives with a REAL mismatch, the prompt fires normally - the "
-		      "once-per-stream budget was not pre-burned by stale data");
+		Check(listener.reapplyCount == 1,
+		      "once the fresh sync arrives with a REAL mismatch, the game's category is re-applied - the "
+		      "once-per-stream check was not pre-burned by stale data");
+		Check(!sm.promptOutstanding() && listener.promptCount == 0, "and nobody is asked anything");
 	}
 }
 
@@ -706,16 +712,12 @@ void RunCreativeAppScenarios()
 		confirm(sm, detectedVsCode);
 		Check(!sm.promptOutstanding(), "and the same app re-winning polls does not re-ask");
 
-		// Trigger C deliberately does NOT spend the once-per-stream
-		// go-live budget, so the first real game of the stream still
-		// meets Trigger A. That is the pre-existing design, and this
-		// asserts the whole chain rather than pretending the creative
-		// prompt bypasses it.
+		// Declining the creative prompt leaves game detection alive: a
+		// real game launching afterwards switches straight away, with no
+		// go-live question in between.
 		confirm(sm, detectedGame);
-		Check(sm.promptOutstanding() && sm.outstandingPromptKind() == PromptKind::GoLiveMismatch,
-		      "a real game afterwards meets the still-unspent go-live check");
-		sm.respondToPrompt(/*acceptAction=*/true, /*dontAskAgainThisStream=*/false);
-		Check(listener.switchInCount == 1, "and switches once that is answered");
+		Check(!sm.promptOutstanding(), "a real game afterwards raises no prompt");
+		Check(listener.switchInCount == 1, "and switches immediately");
 	}
 
 	// --- The paths where the prompt CANNOT be shown must still not switch. ---
@@ -760,7 +762,6 @@ void RunCreativeAppScenarios()
 		// Force the app to look new again so the trigger would fire a
 		// second time if suppression were not honored.
 		confirm(sm, detectedGame);
-		sm.respondToPrompt(/*acceptAction=*/true, /*dontAskAgainThisStream=*/false); // Trigger A, as above.
 		Check(listener.switchInCount == 1, "the real game switches normally");
 
 		listener.promptCount = 0;
@@ -794,8 +795,8 @@ void RunCreativeAppScenarios()
 		RecordingListener listener;
 		DetectionStateMachine sm(listener, timing);
 		sm.setLive(true);
-		// Live category already matches the candidate, so Trigger A has
-		// nothing to say. That isolates the one thing under test: with
+		// Live category already matches the candidate, so a go-live
+		// correction has nothing to say. That isolates the one thing under test: with
 		// no predicate installed, nothing is prompt-only.
 		sm.onLiveCategoryKnown(vscode.displayName);
 
@@ -846,7 +847,7 @@ void RunExternalOverrideScenarios()
 	detectedOther.confidence = Confidence::High;
 
 	sm.setLive(true);
-	sm.onLiveCategoryKnown(game.displayName); // Matches, so Trigger A stays out of the way.
+	sm.onLiveCategoryKnown(game.displayName); // Matches, so no go-live correction is in play.
 	for (std::uint32_t i = 0; i < timing.confirmPolls; ++i)
 		sm.onPollResult(detected);
 	Check(sm.activeGame().has_value(), "a game is active before the external change");
@@ -868,18 +869,12 @@ void RunExternalOverrideScenarios()
 	Check(!sm.isAutomationPaused(), "resume() clears the pause");
 	Check(!sm.activeGame().has_value(), "and re-detects from scratch rather than trusting the stale active game");
 
-	// The first game confirmed after a resume still meets the
-	// once-per-stream go-live check, because nothing had spent it yet.
-	// That is the right outcome and worth pinning down rather than
-	// asserting around: the user has just re-enabled automation after
-	// something changed the category behind SignalBox's back, so
-	// confirming the very next change with them is exactly the moment to
-	// ask.
+	// The first game confirmed after a resume just switches: the channel
+	// still shows the old game's category (a mismatch), and there is no
+	// question to answer first - automation is simply working again.
 	for (std::uint32_t i = 0; i < timing.confirmPolls; ++i)
 		sm.onPollResult(detectedOther);
-	Check(sm.promptOutstanding() && sm.outstandingPromptKind() == PromptKind::GoLiveMismatch,
-	      "the first game after a resume asks before switching");
-	sm.respondToPrompt(/*acceptAction=*/true, /*dontAskAgainThisStream=*/false);
+	Check(!sm.promptOutstanding(), "the first game after a resume raises no prompt");
 	Check(listener.switchInCount == switchesBefore + 1, "detection actually works again afterwards");
 }
 
@@ -935,7 +930,7 @@ void RunStreamEndingHoldScenarios()
 		DetectionStateMachine sm(listener, timing);
 
 		sm.setLive(true);
-		sm.onLiveCategoryKnown(rivals.displayName); // Matches, so Trigger A stays out of the way.
+		sm.onLiveCategoryKnown(rivals.displayName); // Matches, so no go-live correction is in play.
 		for (std::uint32_t i = 0; i < timing.confirmPolls; ++i)
 			sm.onPollResult(dRivals);
 		Check(sm.state() == State::Active, "a game is running before the user presses Stream Ending");
@@ -957,22 +952,20 @@ void RunStreamEndingHoldScenarios()
 		Check(listener.applyFallbackCount == 0, "and nothing is applied to the channel");
 		Check(sm.streamEndingHold(), "and the hold survives the game closing - that was expected, not a surprise");
 
-		// A DIFFERENT game is the second self-clearing condition. Note
-		// what happens next and why it is right: the hold lifts, and
-		// because this stream has not spent its go-live check yet, the
-		// very next thing is Trigger A asking before switching. The
-		// hold is not allowed to swallow that question - it was raised
-		// about a game that had not started when the hold was pressed.
+		// A DIFFERENT game is the second self-clearing condition. The
+		// hold lifts, and the new game (the channel still shows the
+		// first game's category) is switched to straight away - the hold
+		// must not swallow a switch for a game that had not started when
+		// it was pressed.
+		const int switchesBefore = listener.switchInCount;
 		for (std::uint32_t i = 0; i < timing.confirmPolls; ++i)
 			sm.onPollResult(dFortnite);
 		Check(!sm.streamEndingHold(),
 		      "a different game lifts the hold - someone starting a game is plainly not ending a stream");
-		Check(sm.promptOutstanding() && sm.outstandingPromptKind() == PromptKind::GoLiveMismatch,
-		      "and the new game is offered normally, not swallowed by the hold that just lifted");
-
-		const int switchesBefore = listener.switchInCount;
-		sm.respondToPrompt(/*acceptAction=*/true, /*dontAskAgainThisStream=*/false);
-		Check(listener.switchInCount == switchesBefore + 1, "automation really is working again afterwards");
+		Check(!sm.promptOutstanding(), "and nobody is asked anything");
+		Check(listener.switchInCount == switchesBefore + 1,
+		      "the new game is switched to normally, not swallowed by the hold that just lifted - "
+		      "automation really is working again afterwards");
 	}
 
 	// --- The stream stopping: the clear that actually matters. ---
@@ -1347,7 +1340,7 @@ void RunCoordinatorScenarios()
 
 		CoordinatingListener listener(coordinator, /*live=*/true);
 		DetectionStateMachine sm(listener, timing);
-		sm.setLive(true); // currentLiveCategory_ stays empty (no onLiveCategoryKnown call) - Trigger A can't fire.
+		sm.setLive(true); // currentLiveCategory_ stays empty (no onLiveCategoryKnown call) - no go-live correction can fire.
 
 		DetectedGame detected;
 		detected.game = MakeGame(L"Path of Exile 2", Platform::Steam, L"2669320");
@@ -1942,6 +1935,34 @@ void RunLiveVerificationScenarios()
 		Check(listener.switchInCount == 1, "the original switch-in is untouched (re-apply is its own listener call)");
 	}
 
+	// --- The real-stream bug: game confirmed and category set BEFORE
+	// going live, then a multistream relay's category arrives with the
+	// go-live sync. This used to raise a go-live question that nobody
+	// saw, timed out, and left the stream in the wrong category. ---
+	{
+		std::printf("-- Game set before going live, relay category at go-live: corrected, never asked --\n");
+		FakeClock clock;
+		ReapplyListener listener;
+		DetectionStateMachine sm(listener, timing);
+		sm.setTimeSourceForTesting([&] { return clock.now(); });
+		sm.onPollResult(dCoin); // Offline: confirmed and the category is set.
+		Check(sm.state() == State::Active && listener.switchInCount == 1, "the game is confirmed and switched in before going live");
+		clock.advanceS(50); // Past minPatchSpacingS.
+
+		sm.setLive(true);
+		Check(listener.reapplyCount == 0, "nothing to compare at the instant of go-live");
+		sm.onLiveCategoryKnown(L"Fortnite"); // What the relay pushed.
+		Check(listener.reapplyCount == 1 && listener.lastReapplyGame == coin.displayName,
+		      "exactly one re-apply of the game's category");
+		Check(!sm.promptOutstanding() && listener.promptCount == 0, "no prompt is outstanding or was ever raised");
+		Check(!LogContains(listener, L"No response"), "so nothing is logged about an unanswered prompt");
+		Check(listener.switchInCount == 1, "and the original switch-in is untouched");
+
+		clock.advanceS(100);
+		sm.onTick();
+		Check(listener.reapplyCount == 1, "the correction is once per stream - no repeat from this path");
+	}
+
 	// --- A correct category is left alone, however it is spelled. ---
 	{
 		std::printf("-- A matching category is left alone --\n");
@@ -2054,38 +2075,37 @@ void RunLiveVerificationScenarios()
 
 	// --- The user's own choices are not undone. ---
 	{
-		std::printf("-- An explicit 'keep' or user choice is respected; a timeout is not one --\n");
+		std::printf("-- The manual lock is the opt-out: respected at go-live and by every later check --\n");
 		FakeClock clock;
 		ReapplyListener listener;
 		DetectionStateMachine sm(listener, timing);
 		sm.setTimeSourceForTesting([&] { return clock.now(); });
+		sm.setManualLock(true);
 		sm.setLive(true);
 		sm.onLiveCategoryKnown(L"Just Chatting");
-		sm.onPollResult(dCoin); // Mismatch at go-live: Trigger A prompt, no switch yet.
-		Check(sm.promptOutstanding() && sm.outstandingPromptKind() == PromptKind::GoLiveMismatch,
-		      "go-live mismatch raised the prompt");
-		Check(sm.onLiveCategoryVerified(std::wstring(L"Just Chatting")).outcome == VerifyOutcome::SkippedPrompt,
-		      "while the user is being asked, a check does not answer for them");
-		sm.respondToPrompt(/*acceptAction=*/false, /*dontAskAgainThisStream=*/false); // "Keep".
-		Check(sm.onLiveCategoryVerified(std::wstring(L"Just Chatting")).outcome == VerifyOutcome::SkippedKept,
-		      "'Keep <category>' is respected by every later check");
-		Check(listener.reapplyCount == 0, "so nothing was re-applied against their answer");
+		sm.onPollResult(dCoin); // Mismatch at go-live, but the user locked the category.
+		Check(!sm.promptOutstanding(), "a locked mismatch at go-live raises no prompt");
+		Check(listener.switchInCount == 0 && listener.reapplyCount == 0, "and the lock stops the switch");
+		clock.advanceS(50);
+		Check(sm.onLiveCategoryVerified(std::wstring(L"Just Chatting")).outcome == VerifyOutcome::SkippedLocked,
+		      "the lock is respected by every later check");
+		sm.onLiveCategoryKnown(L"Fortnite");
+		Check(listener.reapplyCount == 0, "including a late go-live sync that shows a different category");
 	}
 	{
 		FakeClock clock;
 		ReapplyListener listener;
 		DetectionStateMachine sm(listener, timing);
 		sm.setTimeSourceForTesting([&] { return clock.now(); });
+		std::printf("-- Unattended go-live: nobody needs to answer anything --\n");
 		sm.setLive(true);
-		sm.onLiveCategoryKnown(L"Fortnite");
-		sm.onPollResult(dCoin);
-		Check(sm.promptOutstanding(), "go-live mismatch prompt raised (unattended: nobody answers it)");
-		clock.advanceS(21);
-		sm.onTick();
-		Check(!sm.promptOutstanding(), "it times out");
+		sm.onPollResult(dCoin); // Game confirmed and switched before the channel's category is known.
+		sm.onLiveCategoryKnown(L"Fortnite"); // The sync then shows a relay's category, inside the patch spacing.
+		Check(!sm.promptOutstanding() && listener.promptCount == 0, "no go-live question is raised");
+		Check(listener.reapplyCount == 0, "the correction is deferred by patch spacing, not dropped");
 		clock.advanceS(60);
 		Check(sm.onLiveCategoryVerified(std::wstring(L"Fortnite")).outcome == VerifyOutcome::Reapplied,
-		      "an UNANSWERED go-live prompt is not a decision: the next check still fixes the category");
+		      "the next (quick) check fixes the category with nobody there to answer");
 	}
 	{
 		FakeClock clock;
@@ -2098,8 +2118,6 @@ void RunLiveVerificationScenarios()
 		      "a category the user set through SignalBox (Just Chatting button, Undo) is left alone");
 		const InstalledGame other = MakeGame(L"Hades II", Platform::Steam, L"1145350");
 		sm.onPollResult(MakeDetected(other, 701));
-		if (sm.promptOutstanding()) // A game change from Pending can still raise the once-per-stream go-live prompt.
-			sm.respondToPrompt(/*acceptAction=*/true, /*dontAskAgainThisStream=*/false);
 		clock.advanceS(50);
 		Check(sm.onLiveCategoryVerified(std::wstring(L"Just Chatting")).outcome == VerifyOutcome::Reapplied,
 		      "...until a different game starts, which is a fresh decision");
@@ -2323,7 +2341,7 @@ void RunNoGameWhileLiveScenarios()
 		DetectionStateMachine sm(listener, timing);
 		sm.setTimeSourceForTesting([&] { return clock.now(); });
 		sm.setLive(true);
-		sm.onLiveCategoryKnown(rivals.displayName); // Already the right category: no Trigger A.
+		sm.onLiveCategoryKnown(rivals.displayName); // Already the right category: no go-live correction.
 		tickFor(sm, clock, 120);
 		Check(sm.promptOutstanding(), "prompt is up");
 		sm.onPollResult(dRivals);

@@ -807,6 +807,13 @@ void CategoryDock::onPrompt(core::PromptKind kind, const detection::InstalledGam
 						  "waiting for a game? Click to answer in OBS.")
 					   .arg(currentCategory));
 	}
+	// A creative app offered while live is the same situation: nobody is
+	// watching the dock mid-stream, so without the card it times out unseen.
+	else if (kind == core::PromptKind::CreativeApp && stateMachine_.isLive()) {
+		toast_->showToast(QStringLiteral("SignalBox: switch category?"),
+				   QStringLiteral("\"%1\" is running. Switch to \"%2\"? Click to answer in OBS.")
+					   .arg(gameName, targetCategory));
+	}
 	updateCountdownTimerState();
 	refreshPresentationIfVisible();
 }
@@ -942,7 +949,9 @@ void CategoryDock::syncPromptWidgetVisibility()
 
 	// The notification card lives exactly as long as the no-game prompt.
 	const bool noGamePromptUp =
-		stateMachine_.promptOutstanding() && stateMachine_.outstandingPromptKind() == core::PromptKind::GameClosed;
+		stateMachine_.promptOutstanding() &&
+		(stateMachine_.outstandingPromptKind() == core::PromptKind::GameClosed ||
+		 stateMachine_.outstandingPromptKind() == core::PromptKind::CreativeApp);
 	if (!noGamePromptUp && toast_)
 		toast_->dismiss();
 }

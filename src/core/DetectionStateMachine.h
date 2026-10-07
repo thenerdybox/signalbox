@@ -72,20 +72,13 @@
  * a go-live prompt is open, after the user explicitly kept or chose a
  * category, or for a prompt-only (creative) app. See VerifyOutcome.
  *
- * TRIGGER A GATES THE SWITCH, IT DOES NOT FOLLOW IT: the first confirmed
- * game since going live (or since the live category last became known)
- * calls Listener::onSwitchIn() ONLY if goLiveMismatchApplies() is false
- * (not live, prompts off, already asked/suppressed this stream, live
- * category unknown yet, or it already matches) - a real mismatch defers
- * onSwitchIn entirely until an explicit "Set to <game>" response
- * (respondToPrompt(true, false)). The category the ADDENDUM's worked
- * example shows ("You're live in 'Just Chatting' but Path of Exile 2 is
- * running") is still "Just Chatting" at the moment the prompt appears -
- * switching first and prompting after would make that message a lie.
- * activeGame_/State::Active ARE still set immediately either way (Active
- * means "confirmed as running", a detection fact, independent of whether
- * the Twitch category has been touched yet) - only the Listener call that
- * actually changes the channel is what's deferred.
+ * GO-LIVE MISMATCH IS CORRECTED, NOT ASKED: when the live category
+ * becomes known (or a game confirms) while live and the channel shows a
+ * different category than the confirmed game, the game's category is
+ * applied straight away through onLiveCategoryVerified(), with the same
+ * exemptions as the periodic check. It used to raise a go-live prompt
+ * (Trigger A) that only appeared in the dock and timed out unseen;
+ * PromptKind::GoLiveMismatch is no longer raised.
  *
  * TRIGGER D (NoGameIdle) IS THE ONE PROMPT THAT IS NOT GATED ON
  * LIVE-NESS, and that is a deliberate, eyes-open departure from ADDENDUM
@@ -514,7 +507,6 @@ private:
 	bool goLiveMismatchApplies(const detection::InstalledGame &candidate) const;
 	bool isPromptOnly(const detection::InstalledGame &game) const;
 	void raiseCreativeAppPrompt(const detection::InstalledGame &game);
-	void raiseGoLiveMismatch(const detection::InstalledGame &game);
 	void maybeRaiseGoLiveMismatch();
 	void recordAutomatedChange();
 	void pruneOldChanges(Clock::time_point at);

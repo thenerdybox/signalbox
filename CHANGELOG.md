@@ -5,7 +5,7 @@ Changelog](https://keepachangelog.com/en/1.1.0/) format. This file is the
 single source of truth for release notes — GitHub Releases and the public
 patch-notes page are both generated from it.
 
-## [0.2.7] — 2026-10-06
+## [0.2.7] — 2026-10-07
 
 ### Added
 
@@ -30,11 +30,18 @@ patch-notes page are both generated from it.
 
 ### Changed
 
-- Leaving the question about a mismatched go-live category, or the new
-  no-game question, unanswered no longer means "never fix this": SignalBox
-  keeps your current category untouched, but the next check corrects it and
-  the no-game question comes back. Only an answer you click ("Keep",
-  "Stream ending soon") stops it.
+- **No more question about a mismatched category when you go live.** If a
+  game is running and your channel shows a different category when you go
+  live, SignalBox switches it to the game straight away. The question it used
+  to ask only appeared in the dock, so it usually went unseen and timed out.
+  Turn off automatic switching (manual lock) if you want to keep a different
+  category while a game is running.
+- Leaving the new no-game question unanswered no longer means "never ask
+  again": your category stays as it is and the question comes back later.
+  Only clicking "Stream ending soon" stops it.
+- The question about switching to a creative app's category now also shows
+  the small on-screen card while you are live, so you can see it without
+  looking at OBS.
 - The log now records the category found at go-live and the result of each
   check.
 
@@ -44,9 +51,12 @@ patch-notes page are both generated from it.
   your stream in the wrong category for the whole stream.** SignalBox set the
   right category before you went live, the service then replaced it with its
   own saved one at go-live, and if the go-live question went unanswered for 20
-  seconds SignalBox kept the wrong category and never checked again. The
-  re-checks above now put the game's category back within about 15 seconds of
-  going live.
+  seconds SignalBox kept the wrong category and never checked again. It now
+  switches back to the game as soon as it sees the wrong category, and keeps
+  checking for the rest of the stream.
+- The question about a mismatched category at go-live never appeared anywhere
+  you would see it, only in the dock, then timed out with "No response" in
+  the log. That question is gone (see above).
 
 ## [0.2.6] — 2026-08-23
 

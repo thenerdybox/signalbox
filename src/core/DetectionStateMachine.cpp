@@ -273,21 +273,12 @@ void DetectionStateMachine::confirmPendingCandidate()
 		listener_.onLogEntry(L"\"" + game.displayName + L"\" started — stream-ending hold lifted", L"");
 	}
 
-	// ADDENDUM Trigger A gates the switch rather than following it - see
-	// this class's header doc comment ("TRIGGER A GATES THE SWITCH").
-	// Only evaluated on a genuine game change arriving from a non-Active
-	// state; an ordinary in-stream game-to-game switch (previousState
-	// already Active) is never subject to it - the go-live check is a
-	// once-per-stream thing, not a gate on every automatic switch.
-	if (changingGame && previousState != State::Active && goLiveMismatchApplies(game)) {
-		activeGame_ = game;
-		graceGame_.reset();
-		promptOutstanding_ = false;
-		state_ = State::Active;
-		raiseGoLiveMismatch(game);
-		return;
-	}
-
+	// A game confirming while live in a different category is simply
+	// switched. This used to raise a go-live question (Trigger A) and hold
+	// the switch until it was answered, but that question only ever showed
+	// in the dock, timed out unseen, and left the stream in the wrong
+	// category. Manual lock is the opt-out, as it is for every other
+	// automatic switch.
 	activeGame_ = game;
 	graceGame_.reset();
 	promptOutstanding_ = false;
@@ -588,23 +579,13 @@ void DetectionStateMachine::raiseCreativeAppPrompt(const detection::InstalledGam
 
 bool DetectionStateMachine::goLiveMismatchApplies(const detection::InstalledGame &candidate) const
 {
-	if (!live_ || !promptsEnabled_ || goLiveMismatchSuppressed_ || goLiveMismatchAskedThisStream_)
+	if (!live_ || goLiveMismatchSuppressed_ || goLiveMismatchAskedThisStream_)
 		return false;
 	if (streamEndingHold_)
-		return false; // An outro is not a moment to be asked questions - see the class comment.
+		return false; // The hold means leave the category alone.
 	if (currentLiveCategory_.empty())
 		return false; // Haven't learned the live category yet; re-checked from onLiveCategoryKnown().
 	return !normalizedEquals(candidate.displayName, currentLiveCategory_);
-}
-
-void DetectionStateMachine::raiseGoLiveMismatch(const detection::InstalledGame &game)
-{
-	goLiveMismatchAskedThisStream_ = true;
-	promptOutstanding_ = true;
-	promptKind_ = PromptKind::GoLiveMismatch;
-	promptRelevantGame_ = game;
-	promptDeadline_ = now() + std::chrono::seconds(timing_.promptTimeoutS);
-	listener_.onPrompt(PromptKind::GoLiveMismatch, game);
 }
 
 void DetectionStateMachine::maybeRaiseGoLiveMismatch()
@@ -619,7 +600,14 @@ void DetectionStateMachine::maybeRaiseGoLiveMismatch()
 		return; // Nothing confirmed yet to offer as "Set to <game>".
 	if (!goLiveMismatchApplies(*activeGame_))
 		return;
-	raiseGoLiveMismatch(*activeGame_);
+	// No question: the channel shows something else while the confirmed
+	// game runs, which at go-live is almost always a multistream service
+	// pushing its own saved category. Correct it through the same path as
+	// the periodic check, so manual lock, the stream-ending hold, paused
+	// automation and patch spacing are all respected. If spacing defers it,
+	// the go-live quick checks pick it up.
+	goLiveMismatchAskedThisStream_ = true;
+	onLiveCategoryVerified(currentLiveCategory_);
 }
 
 void DetectionStateMachine::respondToPrompt(bool acceptAction, bool dontAskAgainThisStream)
