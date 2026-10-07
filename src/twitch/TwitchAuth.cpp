@@ -367,7 +367,7 @@ void TwitchAuth::handleRefreshReply(const HttpResponse &response, QString fallba
 void TwitchAuth::validate(const QString &accessToken)
 {
 	if (accessToken.isEmpty()) {
-		emit authFailed(QStringLiteral("No Twitch access token to validate - reconnect required."));
+		emit validationFailed(QStringLiteral("No Twitch access token to validate."));
 		return;
 	}
 
@@ -395,7 +395,7 @@ void TwitchAuth::handleValidateReply(const HttpResponse &response)
 		// A single failed validate is exactly the mid-stream-expiry
 		// signal DESIGN.md 3.3 describes - report it and let the
 		// caller drive the freeze/reconnect flow. No retry loop here.
-		emit authFailed(QStringLiteral("Twitch token validation failed - reconnect required."));
+		emit validationFailed(QStringLiteral("Twitch token validation failed."));
 		return;
 	}
 

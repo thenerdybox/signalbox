@@ -351,6 +351,13 @@ private:
 	// for DetectionStateMachine::onTick() - no new timer). A no-op
 	// whenever there's no Twitch auth/token to validate yet.
 	void maybeValidateTwitchToken();
+	// The one way an expired or rejected access token is recovered: a
+	// refresh if there is a refresh token (at most one in flight - Twitch
+	// refresh tokens for public clients are single-use, so a second
+	// concurrent refresh would fail and look like a dead connection),
+	// otherwise the "reconnect needed" dead end.
+	void recoverTwitchSession();
+	void showTwitchConnected();
 
 	// PromptWidget::dismissWithoutResponse() has a real job: the state
 	// machine can resolve/clear its own outstanding prompt without ever
@@ -466,6 +473,7 @@ private:
 	// maybeValidateTwitchToken()'s doc comment and TimingConstants.h's
 	// ShouldValidateTwitchToken(). 0 means "never validated this run."
 	qint64 lastValidatedAtUnixS_ = 0;
+	bool tokenRefreshInFlight_ = false;
 };
 
 } // namespace signalbox::ui

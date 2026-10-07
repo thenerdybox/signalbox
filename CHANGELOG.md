@@ -57,6 +57,13 @@ patch-notes page are both generated from it.
 - The question about a mismatched category at go-live never appeared anywhere
   you would see it, only in the dock, then timed out with "No response" in
   the log. That question is gone (see above).
+- **"Twitch reconnect needed" showed every time OBS started, even though
+  SignalBox was connected and working.** The saved Twitch login expires after
+  a few hours, so it is normally out of date when OBS starts. SignalBox
+  renewed it automatically, but the dock kept showing the old warning. It now
+  renews the login as OBS starts and the dock says "Connected" once that is
+  done. "Reconnect needed" now only appears when you really do have to
+  connect again.
 
 ## [0.2.6] — 2026-08-23
 

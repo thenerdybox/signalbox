@@ -92,7 +92,9 @@ public:
 
 	// GET https://id.twitch.tv/oauth2/validate. Twitch requires this
 	// on startup and hourly (DESIGN.md 3.3). Emits validated() or
-	// authFailed().
+	// validationFailed() - never authFailed(): an expired access token is
+	// routine and recoverable with the refresh token, so it must not be
+	// reported the way a dead connection is.
 	void validate(const QString &accessToken);
 
 signals:
@@ -100,6 +102,7 @@ signals:
 	void tokensAcquired(TokenSet tokens);
 	void tokensRefreshed(TokenSet tokens);
 	void validated(QString userId, QString login);
+	void validationFailed(QString reason);
 	// human-readable, dock-safe message; never a raw exception/HTTP dump.
 	void authFailed(QString reason);
 

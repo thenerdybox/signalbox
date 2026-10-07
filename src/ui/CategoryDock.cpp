@@ -526,6 +526,10 @@ void CategoryDock::setTwitchClientId(const QString &clientId)
 		// complete TokenSet, never a partial one.
 		currentTokens_ = tokens;
 		saveCurrentTokens();
+		tokenRefreshInFlight_ = false;
+		obs_log(LOG_INFO, "twitch: access token refreshed - connected");
+		// A token Twitch has just issued is a validated one.
+		lastValidatedAtUnixS_ = QDateTime::currentSecsSinceEpoch();
 		if (twitchClient_)
 			twitchClient_->updateAccessToken(tokens.accessToken);
 		// Unlatch the adapter's own reauthRequired_ flag on the SAME
@@ -537,8 +541,19 @@ void CategoryDock::setTwitchClientId(const QString &clientId)
 		// (and the dock's "Connected as X" header) has recovered.
 		if (channelClient_)
 			channelClient_->clearReauthRequired();
+		// The labels said "reconnecting..." (or worse) while this ran;
+		// without this they kept saying it for the whole session even
+		// though everything worked.
+		showTwitchConnected();
+	});
+	connect(twitchAuth_.get(), &twitch::TwitchAuth::validationFailed, this, [this](QString) {
+		// Usually the saved access token from the last session has
+		// expired, which is normal: refresh it rather than telling the
+		// user to reconnect.
+		recoverTwitchSession();
 	});
 	connect(twitchAuth_.get(), &twitch::TwitchAuth::authFailed, this, [this](QString reason) {
+		tokenRefreshInFlight_ = false;
 		twitchStatusLabel_->setText(QStringLiteral("Connection failed: %1").arg(reason));
 		connectionStateLabel_->setText(QStringLiteral("Twitch: reconnect needed"));
 		// The flow is over and it did not succeed, so the device code on
@@ -567,12 +582,19 @@ void CategoryDock::setTwitchClientId(const QString &clientId)
 		currentTokens_.obtainedAtUnixS = stored->obtainedAtUnixS;
 		currentTokens_.expiresInS = stored->expiresInS;
 
+		// Twitch access tokens last about four hours, so the saved one is
+		// usually expired by the next OBS launch. Refresh it up front (before
+		// the client's first calls go out) instead of waiting for a 401.
+		const qint64 expiresAt = currentTokens_.obtainedAtUnixS + currentTokens_.expiresInS;
+		const bool expired = currentTokens_.expiresInS <= 0 || QDateTime::currentSecsSinceEpoch() >= expiresAt - 60;
+		if (expired && !currentTokens_.refreshToken.isEmpty())
+			recoverTwitchSession();
+
 		attachTwitchClient(currentTokens_.accessToken, currentTokens_.userId);
 		if (currentTokens_.userId.isEmpty()) {
 			twitchClient_->resolveCurrentUser();
-		} else {
-			twitchStatusLabel_->setText(QStringLiteral("Connected as %1").arg(currentTokens_.login));
-			connectionStateLabel_->setText(QStringLiteral("Twitch: connected as %1").arg(currentTokens_.login));
+		} else if (!tokenRefreshInFlight_) {
+			showTwitchConnected();
 		}
 	}
 
@@ -639,20 +661,7 @@ void CategoryDock::attachTwitchClient(const QString &accessToken, const QString 
 		// coordinator-of-the-coordinator responsibility TwitchClient.h
 		// documents as belonging to "the owning coordinator" -
 		// CategoryDock is that owner here.
-		twitchStatusLabel_->setText(QStringLiteral("Twitch connection expired - reconnecting..."));
-		connectionStateLabel_->setText(QStringLiteral("Twitch: reconnecting..."));
-		if (!twitchAuth_ || currentTokens_.refreshToken.isEmpty()) {
-			twitchStatusLabel_->setText(QStringLiteral("Twitch reconnect needed"));
-			connectionStateLabel_->setText(QStringLiteral("Twitch: reconnect needed"));
-			// Nothing left to refresh with, so this is a genuine dead
-			// end that only a fresh authorisation clears. Bring the
-			// button back - hiding it while connected is a tidiness
-			// win, but leaving it hidden HERE would be a trap.
-			currentTokens_.accessToken.clear();
-			refreshDockSections();
-			return;
-		}
-		twitchAuth_->refreshTokens(currentTokens_);
+		recoverTwitchSession();
 	});
 
 	// Edge case: Twitch connects (fresh device-code flow, or a warm
@@ -976,6 +985,36 @@ void CategoryDock::revealPrompt()
 	}
 }
 
+void CategoryDock::recoverTwitchSession()
+{
+	if (tokenRefreshInFlight_)
+		return; // The 401 and a failed validate often arrive together at startup.
+	if (!twitchAuth_ || currentTokens_.refreshToken.isEmpty()) {
+		twitchStatusLabel_->setText(QStringLiteral("Twitch reconnect needed"));
+		connectionStateLabel_->setText(QStringLiteral("Twitch: reconnect needed"));
+		// Nothing left to refresh with, so this is a genuine dead
+		// end that only a fresh authorisation clears. Bring the
+		// button back - hiding it while connected is a tidiness
+		// win, but leaving it hidden HERE would be a trap.
+		currentTokens_.accessToken.clear();
+		refreshDockSections();
+		return;
+	}
+	tokenRefreshInFlight_ = true;
+	obs_log(LOG_INFO, "twitch: refreshing access token");
+	twitchStatusLabel_->setText(QStringLiteral("Refreshing Twitch connection..."));
+	connectionStateLabel_->setText(QStringLiteral("Twitch: refreshing connection..."));
+	twitchAuth_->refreshTokens(currentTokens_);
+}
+
+void CategoryDock::showTwitchConnected()
+{
+	const QString who = currentTokens_.login.isEmpty() ? QString() : QStringLiteral(" as %1").arg(currentTokens_.login);
+	twitchStatusLabel_->setText(QStringLiteral("Connected%1").arg(who));
+	connectionStateLabel_->setText(QStringLiteral("Twitch: connected%1").arg(who));
+	refreshDockSections();
+}
+
 void CategoryDock::maybeValidateTwitchToken()
 {
 	// See CategoryDock.h's doc comment and TimingConstants.h's
@@ -983,6 +1022,8 @@ void CategoryDock::maybeValidateTwitchToken()
 	// validate.
 	if (!twitchAuth_ || currentTokens_.accessToken.isEmpty())
 		return;
+	if (tokenRefreshInFlight_)
+		return; // Validating the token being replaced could only fail; the new one counts as validated.
 
 	const qint64 nowUnixS = QDateTime::currentSecsSinceEpoch();
 	if (!core::ShouldValidateTwitchToken(lastValidatedAtUnixS_, nowUnixS, pluginConfig_.timing().tokenValidationIntervalS))
