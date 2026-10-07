@@ -40,7 +40,9 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <vector>
 
+#include "RecentCategories.h"
 #include "TimingConstants.h"
 #include "UserOverrideStore.h"
 
@@ -150,6 +152,17 @@ public:
 	std::wstring userOverrideDisplayName(const std::wstring &key) const;
 	void setUserOverrideDisplayName(const std::wstring &key, const std::wstring &displayName);
 
+	// --- Recently applied categories (RecentCategories.h for the rules) ---
+	// Persisted so "the same few games, nearly every stream" survives a
+	// restart. Fed only from a CONFIRMED category change, never from a
+	// request, so the list holds names Twitch actually accepted.
+	const std::vector<std::wstring> &recentCategories() const;
+
+	// Returns true if the list changed, i.e. the caller should save().
+	// The configured fallback category is deliberately not recorded - it has
+	// its own button.
+	bool noteRecentCategory(std::wstring name);
+
 private:
 	TimingConstants timing_{};
 	std::wstring fallbackCategoryName_ = L"Just Chatting";
@@ -160,6 +173,7 @@ private:
 	bool idlePromptEnabled_ = true;
 	std::map<std::wstring, UserOverride> userOverrides_;
 	std::map<std::wstring, std::wstring> userOverrideDisplayNames_; // Cosmetic only - see userOverrideDisplayName().
+	RecentCategories recentCategories_;
 
 	obs_data *data_ = nullptr; // Owned; released in ~PluginConfig() and on every load().
 };

@@ -50,6 +50,31 @@ PromptWidget::PromptWidget(QWidget *parent) : QWidget(parent)
 	buttonRow->addWidget(tertiaryButton_);
 	layout->addLayout(buttonRow);
 
+	// "Or set it to:" - recent categories, shown only on the no-game
+	// prompts. Always stacked, one per row: a game title is long and a dock
+	// is narrow, the same reasoning as GameClosed's stacked answers above.
+	recentSection_ = new QWidget(this);
+	auto *recentLayout = new QVBoxLayout(recentSection_);
+	recentLayout->setContentsMargins(0, 0, 0, 0);
+	auto *recentLabel = new QLabel(QStringLiteral("Or set it to:"), recentSection_);
+	recentLayout->addWidget(recentLabel);
+	for (int i = 0; i < kMaxRecentButtons; ++i) {
+		auto *button = new QPushButton(recentSection_);
+		button->setFocusPolicy(Qt::NoFocus);
+		recentLayout->addWidget(button);
+		recentButtons_.push_back(button);
+		connect(button, &QPushButton::clicked, this, [this, i]() {
+			if (i >= recentNames_.size())
+				return;
+			const QString name = recentNames_.at(i);
+			const core::PromptKind kind = kind_;
+			hide();
+			emit recentCategoryChosen(kind, name);
+		});
+	}
+	recentSection_->setVisible(false);
+	layout->addWidget(recentSection_);
+
 	dontAskAgainCheckbox_ = new QCheckBox(QStringLiteral("Don't ask again this stream"), this);
 	dontAskAgainCheckbox_->setFocusPolicy(Qt::NoFocus);
 	layout->addWidget(dontAskAgainCheckbox_);
@@ -66,10 +91,11 @@ PromptWidget::PromptWidget(QWidget *parent) : QWidget(parent)
 PromptWidget::~PromptWidget() = default;
 
 void PromptWidget::showPrompt(core::PromptKind kind, const QString &gameName, const QString &currentCategory,
-			       const QString &targetCategory)
+			       const QString &targetCategory, const QStringList &recentCategories)
 {
 	kind_ = kind;
 	dontAskAgainCheckbox_->setChecked(false);
+	tertiaryButton_->setToolTip(QString());
 
 	// The no-game prompt has three long answers - stack them so none is
 	// elided in a narrow dock - and gets a highlighted frame, because it is
@@ -97,7 +123,9 @@ void PromptWidget::showPrompt(core::PromptKind kind, const QString &gameName, co
 		primaryButton_->setText(QStringLiteral("Stream ending soon"));
 		secondaryButton_->setText(QStringLiteral("Switch to %1")
 						  .arg(targetCategory.isEmpty() ? QStringLiteral("Just Chatting") : targetCategory));
-		tertiaryButton_->setText(QStringLiteral("Waiting for a game (updating / loading / installing)"));
+		tertiaryButton_->setText(QStringLiteral("Waiting for a game"));
+		tertiaryButton_->setToolTip(QStringLiteral("A game is updating, loading or installing. Keeps your "
+							   "category and asks again in a couple of minutes."));
 		dontAskAgainCheckbox_->setVisible(false); // The three answers cover it; no scope checkbox needed.
 		break;
 	case core::PromptKind::CreativeApp: {
@@ -133,6 +161,32 @@ void PromptWidget::showPrompt(core::PromptKind kind, const QString &gameName, co
 		break;
 	}
 	}
+
+	// Recents: only the two no-game prompts, and never the category already
+	// live. recentNames_ is rebuilt every time so a stale list can't outlive
+	// the prompt that showed it.
+	recentNames_.clear();
+	if (kind_ == core::PromptKind::GameClosed || kind_ == core::PromptKind::NoGameIdle) {
+		for (const QString &name : recentCategories) {
+			if (recentNames_.size() >= kMaxRecentButtons)
+				break;
+			if (name.isEmpty() || name.compare(currentCategory, Qt::CaseInsensitive) == 0)
+				continue;
+			recentNames_.push_back(name);
+		}
+	}
+	for (int i = 0; i < kMaxRecentButtons; ++i) {
+		auto *button = recentButtons_[static_cast<std::size_t>(i)];
+		const bool used = i < recentNames_.size();
+		button->setVisible(used);
+		if (used) {
+			// Elided for display; the tooltip and the emitted name stay whole.
+			const QString &full = recentNames_.at(i);
+			button->setText(full.size() > 34 ? full.left(33) + QChar(0x2026) : full);
+			button->setToolTip(full);
+		}
+	}
+	recentSection_->setVisible(!recentNames_.isEmpty());
 
 	// A plain show() on a child widget with WA_ShowWithoutActivating -
 	// no top-level window is created or raised, so there is nothing

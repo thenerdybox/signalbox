@@ -11,6 +11,7 @@
 #include <algorithm>
 
 #include <QClipboard>
+#include <QComboBox>
 #include <QDateTime>
 #include <QDockWidget>
 #include <QDesktopServices>
@@ -23,6 +24,8 @@
 #include <QListWidget>
 #include <QListWidgetItem>
 #include <QPushButton>
+#include <QScrollArea>
+#include <QScrollBar>
 #include <QShowEvent>
 #include <QSignalBlocker>
 #include <QTimer>
@@ -88,8 +91,16 @@ CategoryDock::CategoryDock(core::PluginConfig &config, core::CategoryResolver &r
 			  // entry is logged without one.
 			  const std::wstring previousCategory = liveCategory_.toStdWString();
 
-			  stateMachine_.onCategoryApplied(categoryName);
+				  stateMachine_.onCategoryApplied(categoryName);
 			  liveCategory_ = toQString(categoryName);
+
+			  // Confirmed applied, so it is a category worth offering
+			  // again next time. Recording here and not at the click
+			  // means a name Twitch rejected never lands in the list.
+			  if (pluginConfig_.noteRecentCategory(categoryName)) {
+				  pluginConfig_.save();
+				  refreshRecentCategories();
+			  }
 
 			  if (previousCategory != categoryName) {
 				  appendActivityLogEntry(L"Switched to \"" + categoryName + L"\"", previousCategory);
@@ -205,7 +216,27 @@ CategoryDock::~CategoryDock()
 
 void CategoryDock::buildUi()
 {
-	auto *root = new QVBoxLayout(this);
+	// The whole dock sits inside a scroll area. OBS docks have no minimum
+	// height of their own, so in a short dock the groups below the first
+	// screenful were simply clipped - which is how a prompt added under the
+	// Status group went unseen. CategoryDock stays the widget OBS docks (see
+	// plugin-main.cpp); only its contents move into `content`.
+	auto *outer = new QVBoxLayout(this);
+	outer->setContentsMargins(0, 0, 0, 0);
+	scrollArea_ = new QScrollArea(this);
+	scrollArea_->setWidgetResizable(true);
+	scrollArea_->setFrameShape(QFrame::NoFrame);
+	scrollArea_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+	auto *content = new QWidget(scrollArea_);
+	auto *root = new QVBoxLayout(content);
+	scrollArea_->setWidget(content);
+	outer->addWidget(scrollArea_);
+
+	// --- Prompt (embedded, non-modal - see PromptWidget.h) ---
+	// First, above Status: the one thing in this dock that is asking the
+	// user a question, so it must be the first thing seen, not the last.
+	promptWidget_ = new PromptWidget(content);
+	root->addWidget(promptWidget_);
 
 	// --- Status ---
 	statusGroup_ = new QGroupBox(QStringLiteral("Status"), this);
@@ -269,6 +300,20 @@ void CategoryDock::buildUi()
 	statusLayout->addWidget(streamEndingButton_);
 	statusLayout->addWidget(justChattingButton_);
 
+	// Nine streams in ten are the same few games, so the categories SignalBox
+	// has recently applied are one pick away. Hidden while the list is empty
+	// (refreshRecentCategories()). Placeholder text rather than a first
+	// "Choose..." item, so the list holds only real categories.
+	recentCombo_ = new QComboBox(statusGroup);
+	recentCombo_->setPlaceholderText(QStringLiteral("Set category to a recent game..."));
+	recentCombo_->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+	recentCombo_->setMinimumContentsLength(12); // A long title must not widen the dock.
+	recentCombo_->setToolTip(QStringLiteral("Set your Twitch category to a game you've streamed recently, "
+						"right now. Automatic switching carries on as normal afterwards."));
+	recentCombo_->setVisible(false);
+	connect(recentCombo_, &QComboBox::activated, this, &CategoryDock::onRecentCategoryActivated);
+	statusLayout->addWidget(recentCombo_);
+
 	// A hold that cannot be seen is the 45-minute dead zone again in a
 	// different costume: the dock would go on listing a detected game and
 	// counting polls while quietly changing nothing. Same reasoning as
@@ -320,10 +365,6 @@ void CategoryDock::buildUi()
 
 	root->addWidget(statusGroup);
 
-	// --- Prompt (embedded, non-modal - see PromptWidget.h) ---
-	promptWidget_ = new PromptWidget(this);
-	root->addWidget(promptWidget_);
-
 	// --- Twitch ---
 	twitchGroup_ = new QGroupBox(QStringLiteral("Twitch"), this);
 	auto *twitchGroup = twitchGroup_;
@@ -366,6 +407,7 @@ void CategoryDock::buildUi()
 	auto *logGroup = new QGroupBox(QStringLiteral("Activity"), this);
 	auto *logLayout = new QVBoxLayout(logGroup);
 	activityLogView_ = new QListWidget(logGroup);
+	activityLogView_->setMinimumHeight(90); // In a scroll area the log would otherwise squash to nothing.
 	logLayout->addWidget(activityLogView_);
 	root->addWidget(logGroup, /*stretch=*/1);
 
@@ -409,14 +451,13 @@ void CategoryDock::buildUi()
 	footer->addWidget(settingsButton_);
 	root->addLayout(footer);
 
-	setLayout(root);
-
 	// Nothing is connected yet at construction, so this opens on the
 	// Twitch section with Status hidden. setTwitchClientId()'s warm start
 	// calls it again a moment later if a saved token turns up, which is
 	// what makes the common case (already authorised) show Status without
 	// the Twitch box ever flashing into view.
 	refreshDockSections();
+	refreshRecentCategories();
 }
 
 void CategoryDock::wirePromptWidget()
@@ -427,6 +468,27 @@ void CategoryDock::wirePromptWidget()
 		refreshPresentationIfVisible();
 		updateCountdownTimerState();
 	});
+
+	// "Or set it to:" on the two no-game prompts. The streamer is answering
+	// the question AND naming the category in one click, so the prompt must
+	// be answered (never left outstanding) before the category is applied.
+	connect(promptWidget_, &PromptWidget::recentCategoryChosen, this,
+		[this](core::PromptKind kind, const QString &categoryName) {
+			if (kind == core::PromptKind::GameClosed) {
+				// Same state-machine answer as "Waiting for a game": the
+				// prompt closes and the question snoozes rather than
+				// returning while they are mid-switch.
+				stateMachine_.respondNoGame(core::NoGameChoice::Waiting);
+			} else {
+				// NoGameIdle: the decline answer ("Wait for a game"), not
+				// the accept - accept would apply the FALLBACK category.
+				stateMachine_.respondToPrompt(false, false);
+			}
+			syncPromptWidgetVisibility(); // Also dismisses the notification card.
+			applyRecentCategory(categoryName);
+			refreshPresentationIfVisible();
+			updateCountdownTimerState();
+		});
 
 	// The no-game-while-live prompt has three answers of its own.
 	connect(promptWidget_, &PromptWidget::noGameResponded, this, [this](core::NoGameChoice choice) {
@@ -805,7 +867,11 @@ void CategoryDock::onPrompt(core::PromptKind kind, const detection::InstalledGam
 		targetCategory = toQString(resolver_.aliasCategoryFor(relevantGame));
 	else if (kind == core::PromptKind::NoGameIdle || kind == core::PromptKind::GameClosed)
 		targetCategory = toQString(pluginConfig_.fallbackCategoryName());
-	promptWidget_->showPrompt(kind, gameName, currentCategory, targetCategory);
+	QStringList recents;
+	for (const std::wstring &name : pluginConfig_.recentCategories())
+		recents.push_back(toQString(name));
+	promptWidget_->showPrompt(kind, gameName, currentCategory, targetCategory, recents);
+	scrollArea_->verticalScrollBar()->setValue(0); // Put the question in view, whatever the dock was scrolled to.
 
 	// The one prompt worth an out-of-OBS nudge: the streamer is live, in a
 	// game or on another screen, and may never look at the dock. The card
@@ -976,6 +1042,7 @@ void CategoryDock::revealPrompt()
 			break;
 		}
 	}
+	scrollArea_->verticalScrollBar()->setValue(0); // The prompt is the first thing in the dock.
 	// A click on the card is the user's own action, so bringing OBS forward
 	// here is the intended result, not a focus steal.
 	if (QWidget *top = window()) {
@@ -1258,6 +1325,7 @@ void CategoryDock::refreshStatusLabels()
 	// button's own text names a Twitch category, so leaving it live while
 	// disconnected promises something it cannot do.
 	justChattingButton_->setEnabled(!currentTokens_.accessToken.isEmpty());
+	recentCombo_->setEnabled(!currentTokens_.accessToken.isEmpty()); // Same reason.
 
 	const bool paused = stateMachine_.isAutomationPaused();
 	pausedBanner_->setVisible(paused);
@@ -1410,6 +1478,40 @@ void CategoryDock::onJustChattingClicked()
 	// get the real applied name rather than the one we asked for.
 	stateMachine_.noteUserCategoryChoice(); // Their choice: verification must not undo it a minute later.
 	coordinator_.applyFallback(category, stateMachine_.isLive());
+}
+
+void CategoryDock::applyRecentCategory(const QString &categoryName)
+{
+	if (categoryName.isEmpty())
+		return;
+	// Everything onJustChattingClicked() does, for a category the user named:
+	// not gated on onlyWhileLive() (a direct instruction, not automation), and
+	// routed through the coordinator so the external-writer guard learns it.
+	stateMachine_.noteUserCategoryChoice(); // Their choice: verification must not undo it a minute later.
+	coordinator_.applyCategoryByName(categoryName.toStdWString(), stateMachine_.isLive());
+}
+
+void CategoryDock::onRecentCategoryActivated(int index)
+{
+	if (index < 0)
+		return;
+	const QString name = recentCombo_->itemText(index);
+
+	// Back to the placeholder: the box is a menu of actions, not a setting,
+	// and leaving the pick showing would read as "this is the current
+	// category" long after something else changed it.
+	recentCombo_->setCurrentIndex(-1);
+	applyRecentCategory(name);
+}
+
+void CategoryDock::refreshRecentCategories()
+{
+	const QSignalBlocker blocker(recentCombo_);
+	recentCombo_->clear();
+	for (const std::wstring &name : pluginConfig_.recentCategories())
+		recentCombo_->addItem(toQString(name));
+	recentCombo_->setCurrentIndex(-1);
+	recentCombo_->setVisible(recentCombo_->count() > 0);
 }
 
 void CategoryDock::refreshIdlePromptEnabled()

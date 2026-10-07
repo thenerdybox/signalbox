@@ -72,7 +72,10 @@
 
 #pragma once
 
+#include <QStringList>
 #include <QWidget>
+
+#include <vector>
 
 #include "../core/DetectionStateMachine.h" // PromptKind
 
@@ -96,8 +99,16 @@ public:
 	// the detected/last-active game's display name; currentCategory is
 	// what's currently live. Both are used verbatim in the button/
 	// message text - see the class doc comment's per-kind wording.
+	//
+	// recentCategories is the dock's most-recent-first list. It is offered
+	// ("Or set it to:") ONLY on the two no-game prompts, GameClosed and
+	// NoGameIdle - the moments the honest answer is often "I'm playing
+	// something else now" - and never on the others, where the question is
+	// about one specific detected game. At most kMaxRecentButtons are shown,
+	// minus any that equals currentCategory (case-insensitive): offering the
+	// category you are already in is a button that does nothing.
 	void showPrompt(core::PromptKind kind, const QString &gameName, const QString &currentCategory,
-			const QString &targetCategory = QString());
+			const QString &targetCategory = QString(), const QStringList &recentCategories = QStringList());
 
 	// Hides the panel without emitting a response - used when the
 	// state machine's own timeout already resolved it, so the UI
@@ -117,7 +128,16 @@ signals:
 	// checkbox is checked (GameClosed) - see class doc comment #3.
 	void responded(bool acceptAction, bool dontAskAgainThisStream);
 
+	// One of the "Or set it to:" buttons was pressed. Unlike the other
+	// answers this carries a category name, and the panel has already hidden
+	// itself; the owner answers the outstanding prompt and applies it.
+	// The kind is the prompt that was showing, because the two no-game
+	// prompts are answered through different state-machine calls.
+	void recentCategoryChosen(core::PromptKind kind, const QString &categoryName);
+
 private:
+	static constexpr int kMaxRecentButtons = 3;
+
 	void onPrimaryClicked();
 	void onSecondaryClicked();
 	void onTertiaryClicked();
@@ -130,6 +150,11 @@ private:
 	QPushButton *secondaryButton_ = nullptr;
 	QPushButton *tertiaryButton_ = nullptr;
 	QCheckBox *dontAskAgainCheckbox_ = nullptr;
+
+	// "Or set it to:" - see showPrompt(). One widget so it hides as a unit.
+	QWidget *recentSection_ = nullptr;
+	std::vector<QPushButton *> recentButtons_;
+	QStringList recentNames_; // Full names, parallel to recentButtons_ (button text may be elided).
 };
 
 } // namespace signalbox::ui

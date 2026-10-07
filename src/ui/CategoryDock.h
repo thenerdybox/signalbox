@@ -110,10 +110,12 @@
 #include "../twitch/TwitchAuth.h" // TokenSet - held as a value member (currentTokens_).
 
 QT_BEGIN_NAMESPACE
+class QComboBox;
 class QGroupBox;
 class QLabel;
 class QListWidget;
 class QPushButton;
+class QScrollArea;
 class QTimer;
 
 QT_END_NAMESPACE
@@ -318,6 +320,13 @@ private:
 	// pressed near.
 	void onJustChattingClicked();
 
+	// The recent-category picker (status group) and the "Or set it to:"
+	// buttons on the no-game prompts both end here. Same path as
+	// onJustChattingClicked(), for a category named by the user.
+	void applyRecentCategory(const QString &categoryName);
+	void onRecentCategoryActivated(int index);
+	void refreshRecentCategories(); // Rebuilds the picker from PluginConfig; hides it when empty.
+
 	// Recomputes whether Trigger D may fire, from the three things that
 	// decide it: the Settings toggle, whether Twitch is connected at all,
 	// and whether "only while live" would make the answer unusable
@@ -444,6 +453,8 @@ private:
 	QPushButton *streamEndingButton_ = nullptr; // Checkable; mirrors stateMachine_.streamEndingHold().
 	QPushButton *justChattingButton_ = nullptr; // One-click apply of the fallback category.
 	QLabel *streamEndingBanner_ = nullptr;      // Visible only while the hold is on - see refreshStatusLabels().
+	QComboBox *recentCombo_ = nullptr;  // Recently applied categories - see refreshRecentCategories().
+	QScrollArea *scrollArea_ = nullptr; // Wraps all dock content so nothing clips in a short dock.
 	PromptWidget *promptWidget_ = nullptr;
 	std::unique_ptr<PromptToast> toast_; // Parentless always-on-top card - see PromptToast.h.
 	bool liveCheckInFlight_ = false;     // One scheduled verification read at a time.

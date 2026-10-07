@@ -145,6 +145,7 @@ if(ENABLE_QT)
     src/core/CategorySwitchCoordinator.h
     src/core/CategorySwitchCoordinator.cpp
     src/core/UserOverrideStore.h
+    src/core/RecentCategories.h
     src/core/TimingConstants.h
     src/detection/DetectedGame.h
     src/detection/ProcessScanner.h

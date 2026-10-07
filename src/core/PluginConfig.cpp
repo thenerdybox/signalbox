@@ -211,6 +211,26 @@ void PluginConfig::load()
 		obs_data_array_release(overridesArray);
 	}
 
+	// --- Recent categories. Absent in a config.json from before this key
+	// existed, which just means an empty list. Stored as objects, not bare
+	// strings, because obs_data arrays hold objects (same shape as
+	// userOverrides above). ---
+	std::vector<std::wstring> recents;
+	obs_data_array_t *recentsArray = obs_data_get_array(data, "recentCategories");
+	if (recentsArray) {
+		const std::size_t count = obs_data_array_count(recentsArray);
+		for (std::size_t i = 0; i < count; ++i) {
+			obs_data_t *entry = obs_data_array_item(recentsArray, i);
+			if (!entry) {
+				continue;
+			}
+			recents.push_back(Utf8ToWide(obs_data_get_string(entry, "name")));
+			obs_data_release(entry);
+		}
+		obs_data_array_release(recentsArray);
+	}
+	recentCategories_.assign(recents);
+
 	obs_log(LOG_DEBUG, "config: loaded from %s (%zu user override(s))", path.c_str(), userOverrides_.size());
 }
 
@@ -272,6 +292,16 @@ void PluginConfig::save()
 	}
 	obs_data_set_array(data, "userOverrides", overridesArray);
 	obs_data_array_release(overridesArray);
+
+	obs_data_array_t *recentsArray = obs_data_array_create();
+	for (const auto &name : recentCategories_.list()) {
+		obs_data_t *entry = obs_data_create();
+		obs_data_set_string(entry, "name", WideToUtf8(name).c_str());
+		obs_data_array_push_back(recentsArray, entry);
+		obs_data_release(entry);
+	}
+	obs_data_set_array(data, "recentCategories", recentsArray);
+	obs_data_array_release(recentsArray);
 
 	if (!obs_data_save_json_safe(data, path.c_str(), "tmp", "bak")) {
 		obs_log(LOG_WARNING, "config: failed to save %s", path.c_str());
@@ -346,6 +376,16 @@ bool PluginConfig::idlePromptEnabled() const
 void PluginConfig::setIdlePromptEnabled(bool enabled)
 {
 	idlePromptEnabled_ = enabled;
+}
+
+const std::vector<std::wstring> &PluginConfig::recentCategories() const
+{
+	return recentCategories_.list();
+}
+
+bool PluginConfig::noteRecentCategory(std::wstring name)
+{
+	return recentCategories_.note(name, fallbackCategoryName_);
 }
 
 std::optional<UserOverride> PluginConfig::findUserOverride(const std::wstring &key) const

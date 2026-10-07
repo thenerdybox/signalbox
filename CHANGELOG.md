@@ -27,6 +27,11 @@ patch-notes page are both generated from it.
   takes focus away from your game; clicking the card brings up the dock.
 - Settings: how often the live category is re-checked, whether to also check
   right after going live, and how long "Waiting for a game" stays quiet.
+- **Pick a recent game from the dock.** SignalBox remembers the last five
+  categories it set. A "Set category to a recent game..." list in the dock
+  switches to one in two clicks, any time. The no-game questions also offer
+  your recent games as buttons, so one click sets the category and answers
+  the question.
 
 ### Changed
 
@@ -42,6 +47,8 @@ patch-notes page are both generated from it.
 - The question about switching to a creative app's category now also shows
   the small on-screen card while you are live, so you can see it without
   looking at OBS.
+- SignalBox's questions now appear at the top of the dock, and the dock
+  scrolls when it is short.
 - The log now records the category found at go-live and the result of each
   check.
 
@@ -57,6 +64,8 @@ patch-notes page are both generated from it.
 - The question about a mismatched category at go-live never appeared anywhere
   you would see it, only in the dock, then timed out with "No response" in
   the log. That question is gone (see above).
+- Questions in the dock could be cut off below the bottom edge of a short
+  dock, so there was never anything to click and every question timed out.
 - **"Twitch reconnect needed" showed every time OBS started, even though
   SignalBox was connected and working.** The saved Twitch login expires after
   a few hours, so it is normally out of date when OBS starts. SignalBox

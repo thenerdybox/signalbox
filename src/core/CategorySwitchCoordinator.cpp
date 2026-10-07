@@ -65,23 +65,40 @@ void CategorySwitchCoordinator::switchIn(const detection::InstalledGame &game, b
 void CategorySwitchCoordinator::applyFallback(const std::wstring &fallbackCategoryName, bool live,
 					       CompletionCallback onComplete)
 {
+	applyNamedCategory(fallbackCategoryName, live, std::move(onComplete), /*isFallback=*/true);
+}
+
+void CategorySwitchCoordinator::applyCategoryByName(const std::wstring &categoryName, bool live,
+						     CompletionCallback onComplete)
+{
+	applyNamedCategory(categoryName, live, std::move(onComplete), /*isFallback=*/false);
+}
+
+void CategorySwitchCoordinator::applyNamedCategory(const std::wstring &categoryName, bool live,
+						    CompletionCallback onComplete, bool isFallback)
+{
+	// The only difference between the two public entry points is how a
+	// failure is worded: a user who picked "Hades II" from the recent list
+	// should not be told the "fallback category" couldn't be switched.
+	const std::wstring what = isFallback ? std::wstring(L"the fallback category") : L"\"" + categoryName + L"\"";
+
 	if (!channelClient_) {
-		log(L"Twitch is not connected - couldn't switch to the fallback category");
+		log(L"Twitch is not connected - couldn't switch to " + what);
 		if (onComplete) {
 			onComplete(false);
 		}
 		return;
 	}
 	if (channelClient_->reauthRequired()) {
-		log(L"Twitch needs to be reconnected - couldn't switch to the fallback category");
+		log(L"Twitch needs to be reconnected - couldn't switch to " + what);
 		if (onComplete) {
 			onComplete(false);
 		}
 		return;
 	}
 	if (!categoryLookup_) {
-		log(L"No Twitch category lookup available yet - couldn't resolve fallback category \"" + fallbackCategoryName +
-		    L"\"");
+		log(std::wstring(L"No Twitch category lookup available yet - couldn't resolve ") +
+		    (isFallback ? L"fallback category " : L"category ") + L"\"" + categoryName + L"\"");
 		if (onComplete) {
 			onComplete(false);
 		}
@@ -89,10 +106,9 @@ void CategorySwitchCoordinator::applyFallback(const std::wstring &fallbackCatego
 	}
 
 	categoryLookup_->findExact(
-		fallbackCategoryName, [this, fallbackCategoryName, live, onComplete](std::optional<ResolvedCategory> resolved) {
+		categoryName, [this, categoryName, live, onComplete](std::optional<ResolvedCategory> resolved) {
 			if (!resolved) {
-				log(L"Couldn't find a Twitch category named \"" + fallbackCategoryName +
-				    L"\" - category unchanged");
+				log(L"Couldn't find a Twitch category named \"" + categoryName + L"\" - category unchanged");
 				if (onComplete) {
 					onComplete(false);
 				}

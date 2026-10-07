@@ -264,7 +264,17 @@ public:
 	// nullptr.
 	void applyFallback(const std::wstring &fallbackCategoryName, bool live, CompletionCallback onComplete = nullptr);
 
+	// Same sequence as applyFallback() for ANY category the user picked by
+	// name (the dock's recent-category choices). Identical resolve -> guard
+	// -> PATCH -> feedback path; only the log wording differs, so a failure
+	// names the category the user chose instead of "the fallback category".
+	void applyCategoryByName(const std::wstring &categoryName, bool live, CompletionCallback onComplete = nullptr);
+
 private:
+	// Shared body of applyFallback()/applyCategoryByName().
+	void applyNamedCategory(const std::wstring &categoryName, bool live, CompletionCallback onComplete,
+				bool isFallback);
+
 	// Shared tail end of both switchIn() and applyFallback(): takes
 	// whatever CategoryResolver/categoryLookup_ resolved and either
 	// PATCHes it (categoryId already present) or resolves the tier-2

@@ -27,6 +27,7 @@
 #include "core/CategoryResolver.h"
 #include "core/CategorySwitchCoordinator.h"
 #include "core/DetectionStateMachine.h"
+#include "core/RecentCategories.h"
 #include "core/TimingConstants.h"
 #include "detection/DetectedGame.h"
 #include "detection/IGameProvider.h"
@@ -42,6 +43,7 @@ using signalbox::core::ICategoryLookup;
 using signalbox::core::IUserOverrideStore;
 using signalbox::core::NoGameChoice;
 using signalbox::core::PromptKind;
+using signalbox::core::RecentCategories;
 using signalbox::core::ResolvedCategory;
 using signalbox::core::ShouldValidateTwitchToken;
 using signalbox::core::State;
@@ -1646,6 +1648,46 @@ void RunCoordinatorScenarios()
 		});
 		Check(completionCalled && !completionSuccess, "Undo's completion callback reports failure, not silence, on an unresolvable category");
 	}
+
+	// --- Scenario 10: the dock's recent-category picker. Same path as the
+	// fallback, any name, and a failure names the category the user chose. ---
+	{
+		std::printf("-- applyCategoryByName applies an arbitrary category, and words a miss without saying 'fallback' --\n");
+		FakeOverrideStore overrides;
+		FakeCategoryLookup lookup;
+		lookup.seedExact(L"Hades II", ResolvedCategory{L"1234", L"Hades II"});
+		CategoryResolver resolver(overrides, &lookup);
+
+		std::vector<std::wstring> activity;
+		std::wstring appliedName;
+		CategorySwitchCoordinator coordinator(
+			resolver, [&](const std::wstring &m) { activity.push_back(m); }, []() {},
+			[&](const std::wstring &name) { appliedName = name; });
+		coordinator.setCategoryLookup(&lookup);
+
+		FakeChannelClient channelClient;
+		coordinator.setChannelClient(&channelClient);
+
+		bool success = false;
+		coordinator.applyCategoryByName(L"Hades II", /*live=*/false, [&](bool ok) { success = ok; });
+		Check(success && appliedName == L"Hades II", "the chosen category is PATCHed and reported as applied");
+		Check(channelClient.lastSuccessfullySetCategoryId.has_value() &&
+			      *channelClient.lastSuccessfullySetCategoryId == L"1234",
+		      "the PATCH carried the id resolved from the chosen name");
+
+		activity.clear();
+		coordinator.applyCategoryByName(L"Nonexistent Game", /*live=*/false);
+		Check(activity.size() == 1 && activity[0].find(L"Nonexistent Game") != std::wstring::npos &&
+			      activity[0].find(L"allback") == std::wstring::npos,
+		      "a miss names the category the user chose and does not call it a fallback");
+
+		coordinator.setChannelClient(nullptr);
+		activity.clear();
+		coordinator.applyCategoryByName(L"Hades II", /*live=*/false);
+		Check(activity.size() == 1 && activity[0].find(L"Hades II") != std::wstring::npos &&
+			      activity[0].find(L"allback") == std::wstring::npos,
+		      "with Twitch disconnected the line names the chosen category, not the fallback");
+	}
 }
 
 // ---------------------------------------------------------------------
@@ -2444,6 +2486,73 @@ void RunNoGameWhileLiveScenarios()
 	}
 }
 
+// ---------------------------------------------------------------------
+// SECTION: RecentCategories - the ordering rules behind PluginConfig's
+// persisted "recentCategories" list. PluginConfig itself needs libobs's
+// obs_data (the harness links none), so the rules live in an OBS-free
+// header and are proven here; PluginConfig only serialises the list.
+// ---------------------------------------------------------------------
+
+void RunRecentCategoryScenarios()
+{
+	std::printf("\n=== SECTION: RecentCategories (persisted recents list) ===\n");
+
+	const std::wstring fallback = L"Just Chatting";
+
+	{
+		std::printf("-- Most recent first --\n");
+		RecentCategories recents;
+		Check(recents.list().empty(), "a fresh list is empty (also what an old config without the key loads as)");
+		Check(recents.note(L"Hades II", fallback), "recording a new category reports a change");
+		Check(recents.note(L"Elden Ring", fallback), "recording a second category reports a change");
+		Check(recents.list().size() == 2 && recents.list()[0] == L"Elden Ring" && recents.list()[1] == L"Hades II",
+		      "newest category is first");
+	}
+	{
+		std::printf("-- De-duplicated case-insensitively, newest spelling kept --\n");
+		RecentCategories recents;
+		recents.note(L"Hades II", fallback);
+		recents.note(L"Elden Ring", fallback);
+		Check(recents.note(L"HADES ii", fallback), "re-noting with different case reports a change");
+		Check(recents.list().size() == 2 && recents.list()[0] == L"HADES ii" && recents.list()[1] == L"Elden Ring",
+		      "the entry moves to the front and takes the newest spelling");
+		Check(!recents.note(L"HADES ii", fallback), "re-noting the identical front entry reports no change");
+	}
+	{
+		std::printf("-- Capped at five --\n");
+		RecentCategories recents;
+		for (const wchar_t *name : {L"A", L"B", L"C", L"D", L"E", L"F", L"G"})
+			recents.note(name, fallback);
+		Check(recents.list().size() == 5, "never holds more than five");
+		Check(recents.list().front() == L"G" && recents.list().back() == L"C", "the oldest entries are the ones dropped");
+	}
+	{
+		std::printf("-- Fallback and empty names are never recorded --\n");
+		RecentCategories recents;
+		Check(!recents.note(L"Just Chatting", fallback), "the fallback category is not recorded");
+		Check(!recents.note(L"just chatting", fallback), "...case-insensitively");
+		Check(!recents.note(L"", fallback), "an empty name is ignored");
+		Check(recents.list().empty(), "nothing was added");
+	}
+	{
+		std::printf("-- Loading persisted data re-applies the rules --\n");
+		RecentCategories recents;
+		recents.assign({L"Hades II", L"", L"hades ii", L"Elden Ring", L"C", L"D", L"E", L"F", L"G"});
+		Check(recents.list().size() == 5, "an oversized or hand-edited list is capped at five");
+		Check(recents.list()[0] == L"Hades II" && recents.list()[1] == L"Elden Ring",
+		      "order is kept, with empties and case-duplicates dropped");
+
+		RecentCategories reloaded;
+		reloaded.assign(recents.list()); // What save() writes and load() reads back.
+		Check(reloaded.list() == recents.list(), "a save/load round trip preserves the list exactly");
+
+		RecentCategories oldConfig;
+		oldConfig.note(L"Stale", fallback);
+		oldConfig.assign({}); // A config.json with no "recentCategories" key.
+		Check(oldConfig.list().empty(), "loading a config without the key yields an empty list");
+	}
+}
+
 int main()
 {
 	std::printf("SignalBox - standalone harness (no OBS, no live Twitch)\n");
@@ -2459,6 +2568,7 @@ int main()
 	RunLiveVerificationScenarios();
 	RunNoGameWhileLiveScenarios();
 	RunCoordinatorScenarios();
+	RunRecentCategoryScenarios();
 	RunInstallIndexScenario();
 	RunTokenValidationTimingScenario();
 	RunShippedDataFileScenarios();
