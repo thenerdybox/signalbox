@@ -607,6 +607,11 @@ void CategoryDock::setTwitchClientId(const QString &clientId)
 		// without this they kept saying it for the whole session even
 		// though everything worked.
 		showTwitchConnected();
+		// The startup read of the channel's category usually went out with
+		// the expired token and failed, leaving "Live category: (unknown)"
+		// for the session. Read it again now that there is a good token.
+		if (liveCategory_.isEmpty())
+			syncLiveCategoryFromChannel();
 	});
 	connect(twitchAuth_.get(), &twitch::TwitchAuth::validationFailed, this, [this](QString) {
 		// Usually the saved access token from the last session has
@@ -705,6 +710,22 @@ void CategoryDock::attachTwitchClient(const QString &accessToken, const QString 
 	// ambient polling" directive). Everything after this is kept current
 	// by the PATCH feedback channel that was already doing the job.
 	syncLiveCategoryFromChannel();
+
+	// A fresh install, or one upgraded from before recent categories
+	// existed, has an empty list until SignalBox next sets something. The
+	// category cache already knows which games this streamer plays, so
+	// start from that instead of showing nothing. noteRecentCategory()
+	// puts each name first, so feed them in reverse to keep A-Z order.
+	if (pluginConfig_.recentCategories().empty()) {
+		const QStringList cached = twitchClient_->cachedCategoryNames();
+		bool changed = false;
+		for (auto it = cached.crbegin(); it != cached.crend(); ++it)
+			changed = pluginConfig_.noteRecentCategory(it->toStdWString()) || changed;
+		if (changed) {
+			pluginConfig_.save();
+			refreshRecentCategories();
+		}
+	}
 
 	connect(twitchClient_.get(), &twitch::TwitchClient::currentUserResolved, this,
 		[this](QString userId, QString login) {

@@ -31,7 +31,8 @@ patch-notes page are both generated from it.
   categories it set. A "Set category to a recent game..." list in the dock
   switches to one in two clicks, any time. The no-game questions also offer
   your recent games as buttons, so one click sets the category and answers
-  the question.
+  the question. The list starts with the games SignalBox has already
+  looked up for you, so it is useful straight after updating.
 
 ### Changed
 
@@ -73,6 +74,9 @@ patch-notes page are both generated from it.
   renews the login as OBS starts and the dock says "Connected" once that is
   done. "Reconnect needed" now only appears when you really do have to
   connect again.
+- The dock could show "Live category: (unknown)" for a whole session after
+  OBS started. It now reads the category again once the Twitch login has been
+  renewed.
 
 ## [0.2.6] — 2026-08-23
 

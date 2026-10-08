@@ -80,6 +80,7 @@
 #include <QByteArray>
 #include <QObject>
 #include <QString>
+#include <QStringList>
 #include <QVector>
 #include <cstdint>
 #include <map>
@@ -160,6 +161,11 @@ public:
 	// without any network call when this exact name has been resolved
 	// before on this install.
 	void findCategoryByExactName(const QString &name);
+
+	// Names of every category this install has ever resolved by exact name
+	// (the persistent cache), sorted. Used to give an empty recent-category
+	// list a useful starting point; never touches the network.
+	QStringList cachedCategoryNames() const;
 
 	// GET /helix/search/categories?query=<normalized>. CategoryResolver
 	// tier 3, second half - caller applies the scoring/threshold logic

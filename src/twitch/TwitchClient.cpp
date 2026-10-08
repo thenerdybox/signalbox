@@ -620,6 +620,17 @@ void TwitchClient::createStreamMarker(const QString &description)
 }
 
 // ---------------------------------------------------------------------
+QStringList TwitchClient::cachedCategoryNames() const
+{
+	QStringList names;
+	for (const auto &[key, match] : exactCache_) {
+		if (match && !match->gameName.isEmpty() && !names.contains(match->gameName, Qt::CaseInsensitive))
+			names.push_back(match->gameName);
+	}
+	names.sort(Qt::CaseInsensitive);
+	return names;
+}
+
 // Permanent category cache - category-cache.json, plugin config dir
 // ---------------------------------------------------------------------
 QString TwitchClient::normalizeKey(const QString &raw)
