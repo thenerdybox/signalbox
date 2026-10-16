@@ -69,7 +69,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [CustomMessages]
 english.ObsNotFound=OBS Studio could not be found automatically.%n%nChoose the folder OBS is installed in on the next page - the one containing obs-plugins and data.
-english.ObsRunning=OBS Studio appears to be running.%n%nClose it before continuing, or the plugin file will be locked and cannot be replaced.
+english.ObsRunning=OBS Studio is running, so setup will close now.%n%nClose OBS completely, then run this installer again.%n%nWhile OBS is open it keeps the plugin file locked, so an update could fail partway and leave SignalBox half-installed.
 english.NotAnObsFolder=That folder does not look like an OBS Studio installation - no obs-plugins folder was found inside it.%n%nContinue anyway?
 english.KeepSettings=Keep your SignalBox settings and Twitch connection?%n%nChoosing No also removes your saved category overrides and signs you out.
 english.LegacyRemovalFailed=An older SignalBox installation was found but could not be removed automatically.%n%nUninstall "SignalBox Category Monitor" from Apps & Features first, then run this installer again.
