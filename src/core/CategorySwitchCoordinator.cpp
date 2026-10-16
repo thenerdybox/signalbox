@@ -74,6 +74,21 @@ void CategorySwitchCoordinator::applyCategoryByName(const std::wstring &category
 	applyNamedCategory(categoryName, live, std::move(onComplete), /*isFallback=*/false);
 }
 
+void CategorySwitchCoordinator::applyCategoryById(const std::wstring &categoryId, const std::wstring &categoryName,
+						   bool live, CompletionCallback onComplete)
+{
+	if (categoryId.empty()) {
+		applyCategoryByName(categoryName, live, std::move(onComplete));
+		return;
+	}
+	if (!channelClient_ || channelClient_->reauthRequired()) {
+		// The named path words these failures; reuse it rather than repeat them.
+		applyCategoryByName(categoryName, live, std::move(onComplete));
+		return;
+	}
+	applyResolvedCategory(ResolvedCategory{categoryId, categoryName}, live, std::move(onComplete));
+}
+
 void CategorySwitchCoordinator::applyNamedCategory(const std::wstring &categoryName, bool live,
 						    CompletionCallback onComplete, bool isFallback)
 {

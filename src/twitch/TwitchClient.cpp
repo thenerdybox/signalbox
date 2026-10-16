@@ -498,20 +498,41 @@ void TwitchClient::findCategoryByExactName(const QString &name)
 // ---------------------------------------------------------------------
 void TwitchClient::searchCategories(const QString &query)
 {
-	const QString key = normalizeKey(query);
+	runCategorySearch(query, /*forSuggestions=*/false);
+}
 
-	const auto cached = searchCache_.find(key);
-	if (cached != searchCache_.end()) {
-		emit categorySearchResults(cached->second);
+void TwitchClient::searchCategorySuggestions(const QString &query)
+{
+	runCategorySearch(query, /*forSuggestions=*/true);
+}
+
+void TwitchClient::runCategorySearch(const QString &query, bool forSuggestions)
+{
+	const QString key = normalizeKey(query);
+	// Which signal and failure context this caller is listening on - see
+	// searchCategorySuggestions() for why the two must not be mixed.
+	const QString context = forSuggestions ? QStringLiteral("searchCategorySuggestions")
+					       : QStringLiteral("searchCategories");
+	const auto deliver = [this, query, forSuggestions](const QVector<CategoryMatch> &matches) {
+		if (forSuggestions)
+			emit categorySuggestionsReady(query, matches);
+		else
+			emit categorySearchResults(matches);
+	};
+
+	auto &cache = forSuggestions ? suggestionCache_ : searchCache_;
+	const auto cached = cache.find(key);
+	if (cached != cache.end()) {
+		deliver(cached->second);
 		return;
 	}
 
 	if (frozen_) {
-		emit requestFailed(QStringLiteral("searchCategories"), QStringLiteral("Twitch reconnect required."));
+		emit requestFailed(context, QStringLiteral("Twitch reconnect required."));
 		return;
 	}
 	if (gatedByBackoff()) {
-		emit requestFailed(QStringLiteral("searchCategories"), QStringLiteral("Temporarily rate-limited by Twitch."));
+		emit requestFailed(context, QStringLiteral("Temporarily rate-limited by Twitch."));
 		return;
 	}
 
@@ -520,7 +541,7 @@ void TwitchClient::searchCategories(const QString &query)
 	urlQuery.addQueryItem(QStringLiteral("query"), query);
 	url.setQuery(urlQuery);
 
-	transport_->send(buildHelixRequest(HttpMethod::Get, url), [this, key](HttpResponse response) {
+	transport_->send(buildHelixRequest(HttpMethod::Get, url), [this, key, context, deliver, forSuggestions](HttpResponse response) {
 		const HelixReplyOutcome outcome = consumeResponse(response);
 		noteRequestOutcome(outcome);
 		if (outcome.unauthorized) {
@@ -528,7 +549,7 @@ void TwitchClient::searchCategories(const QString &query)
 			return;
 		}
 		if (!outcome.ok) {
-			emit requestFailed(QStringLiteral("searchCategories"), humanReadableFailure(outcome));
+			emit requestFailed(context, humanReadableFailure(outcome));
 			return;
 		}
 
@@ -547,10 +568,14 @@ void TwitchClient::searchCategories(const QString &query)
 		// non-empty result gets written to disk (see
 		// saveCategoryCache()) - same staleness reasoning as the
 		// exact-match cache above.
-		searchCache_[key] = matches;
-		if (!matches.isEmpty())
-			saveCategoryCache();
-		emit categorySearchResults(matches);
+		if (forSuggestions) {
+			suggestionCache_[key] = matches;
+		} else {
+			searchCache_[key] = matches;
+			if (!matches.isEmpty())
+				saveCategoryCache();
+		}
+		deliver(matches);
 	});
 }
 

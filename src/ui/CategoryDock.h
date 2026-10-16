@@ -64,7 +64,9 @@
  * dropped on restart - they now round-trip through config_ too.
  *
  * TIMERS (lightweight-by-design requirement - see .cpp for the full
- * accounting): exactly two QTimer instances exist.
+ * accounting): two QTimer instances run, plus one single-shot debounce
+ * (categorySearchTimer_, below) that is idle unless the user is typing
+ * in the category search box.
  *   1. tickTimer_ - interval TimingConstants::pollIntervalS (default 5s),
  *      runs for the plugin's lifetime. This is DetectionStateMachine's
  *      own required heartbeat (its onTick() doc comment: "call at least
@@ -80,6 +82,8 @@
  *      the instant either condition stops holding. This is the ONLY
  *      thing that repaints on a tick - everything else in this class
  *      updates from Listener callbacks (i.e. on actual state changes).
+ *   3. categorySearchTimer_ - single-shot, 300ms, started by typing in the
+ *      category search box and never otherwise. Nothing polls.
  *
  * VISIBILITY: presentation work (formatting label text, rebuilding the
  * log list) is skipped while !isVisible() and caught up once in
@@ -95,6 +99,9 @@
 #include <deque>
 #include <memory>
 
+#include <QHash>
+#include <QString>
+#include <QVector>
 #include <QWidget>
 
 #include <obs-frontend-api.h>
@@ -107,12 +114,16 @@
 #include "../detection/ProcessScanner.h" // ExitReason
 #include "../twitch/HttpTransport.h" // twitch::HttpTransport - update check + all Twitch traffic.
 #include "../twitch/TokenStore.h"
+#include "../twitch/TwitchClient.h" // CategoryMatch - the search box's result type.
 #include "../twitch/TwitchAuth.h" // TokenSet - held as a value member (currentTokens_).
 
 QT_BEGIN_NAMESPACE
 class QComboBox;
+class QCompleter;
 class QGroupBox;
 class QLabel;
+class QLineEdit;
+class QStringListModel;
 class QListWidget;
 class QPushButton;
 class QScrollArea;
@@ -325,6 +336,21 @@ private:
 	// onJustChattingClicked(), for a category named by the user.
 	void applyRecentCategory(const QString &categoryName);
 	void onRecentCategoryActivated(int index);
+
+	// The category search box (status group). Typing is debounced, then
+	// asks Twitch for matching categories; the answer fills the completer.
+	// Choosing one applies it. See CategoryDock.cpp for the stale-result rule.
+	void onCategorySearchTextChanged();
+	void runCategorySearch();
+	void onCategorySuggestions(const QString &query, const QVector<twitch::CategoryMatch> &matches);
+	void applySearchedCategory(const QString &typedOrPicked);
+
+	// Common tail of every category set from SignalBox's own controls
+	// (search box, recent picker, the prompts' "Or set it to:"): when no PC
+	// game is running the streamer is playing somewhere else, so the
+	// no-game questions are switched off. With a game running it is only a
+	// manual override and nothing extra is done.
+	void noteCategoryChosenFromSignalBox(const QString &categoryName);
 	void refreshRecentCategories(); // Rebuilds the picker from PluginConfig; hides it when empty.
 
 	// Recomputes whether Trigger D may fire, from the three things that
@@ -454,6 +480,14 @@ private:
 	QPushButton *justChattingButton_ = nullptr; // One-click apply of the fallback category.
 	QLabel *streamEndingBanner_ = nullptr;      // Visible only while the hold is on - see refreshStatusLabels().
 	QComboBox *recentCombo_ = nullptr;  // Recently applied categories - see refreshRecentCategories().
+	QLineEdit *categorySearchEdit_ = nullptr;             // "Search Twitch categories..." with autocomplete.
+	QCompleter *categoryCompleter_ = nullptr;
+	QStringListModel *categorySuggestionModel_ = nullptr; // Names from the last matching search.
+	QTimer *categorySearchTimer_ = nullptr;               // Single-shot debounce; idle unless typing.
+	QHash<QString, QString> categorySuggestionIds_;       // Lower-cased name -> Twitch category id.
+	QHash<QString, QString> categorySuggestionNames_;     // Lower-cased name -> name as Twitch spells it.
+	QLabel *playingElsewhereBanner_ = nullptr;            // Visible only while the hold is on.
+	QPushButton *resumeAskingButton_ = nullptr;           // "Switching to a PC game" - ends the hold.
 	QScrollArea *scrollArea_ = nullptr; // Wraps all dock content so nothing clips in a short dock.
 	PromptWidget *promptWidget_ = nullptr;
 	std::unique_ptr<PromptToast> toast_; // Parentless always-on-top card - see PromptToast.h.

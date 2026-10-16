@@ -43,11 +43,13 @@ PromptWidget::PromptWidget(QWidget *parent) : QWidget(parent)
 	primaryButton_ = new QPushButton(this);
 	secondaryButton_ = new QPushButton(this);
 	tertiaryButton_ = new QPushButton(this);
-	for (auto *button : {primaryButton_, secondaryButton_, tertiaryButton_})
+	elsewhereButton_ = new QPushButton(this);
+	for (auto *button : {primaryButton_, secondaryButton_, tertiaryButton_, elsewhereButton_})
 		button->setFocusPolicy(Qt::NoFocus); // Clicking must not pull keyboard focus into the dock.
 	buttonRow->addWidget(primaryButton_);
 	buttonRow->addWidget(secondaryButton_);
 	buttonRow->addWidget(tertiaryButton_);
+	buttonRow->addWidget(elsewhereButton_);
 	layout->addLayout(buttonRow);
 
 	// "Or set it to:" - recent categories, shown only on the no-game
@@ -84,6 +86,7 @@ PromptWidget::PromptWidget(QWidget *parent) : QWidget(parent)
 	connect(primaryButton_, &QPushButton::clicked, this, &PromptWidget::onPrimaryClicked);
 	connect(secondaryButton_, &QPushButton::clicked, this, &PromptWidget::onSecondaryClicked);
 	connect(tertiaryButton_, &QPushButton::clicked, this, &PromptWidget::onTertiaryClicked);
+	connect(elsewhereButton_, &QPushButton::clicked, this, &PromptWidget::onElsewhereClicked);
 
 	hide(); // Only visible while a prompt is outstanding.
 }
@@ -96,8 +99,9 @@ void PromptWidget::showPrompt(core::PromptKind kind, const QString &gameName, co
 	kind_ = kind;
 	dontAskAgainCheckbox_->setChecked(false);
 	tertiaryButton_->setToolTip(QString());
+	elsewhereButton_->setVisible(false); // Only the no-game prompt has a fourth answer.
 
-	// The no-game prompt has three long answers - stack them so none is
+	// The no-game prompt has four long answers - stack them so none is
 	// elided in a narrow dock - and gets a highlighted frame, because it is
 	// the one question that should not sit unseen behind another tab.
 	const bool prominent = (kind == core::PromptKind::GameClosed);
@@ -126,7 +130,19 @@ void PromptWidget::showPrompt(core::PromptKind kind, const QString &gameName, co
 		tertiaryButton_->setText(QStringLiteral("Waiting for a game"));
 		tertiaryButton_->setToolTip(QStringLiteral("A game is updating, loading or installing. Keeps your "
 							   "category and asks again in a couple of minutes."));
-		dontAskAgainCheckbox_->setVisible(false); // The three answers cover it; no scope checkbox needed.
+		// The category is elided in the label (a game title is long and the
+		// dock is narrow; a button's minimum width follows its text), with
+		// the whole thing in the tooltip.
+		elsewhereButton_->setText(
+			QStringLiteral("Playing on another device (keep \"%1\")")
+				.arg(currentCategory.size() > 24 ? currentCategory.left(23) + QChar(0x2026) : currentCategory));
+		elsewhereButton_->setToolTip(QStringLiteral("A console, handheld or other PC: keeps your category and stops "
+							    "asking until a game starts here or the stream ends.%1")
+						     .arg(currentCategory.size() > 24
+								  ? QStringLiteral("\n\nCategory: %1").arg(currentCategory)
+								  : QString()));
+		elsewhereButton_->setVisible(true);
+		dontAskAgainCheckbox_->setVisible(false); // The four answers cover it; no scope checkbox needed.
 		break;
 	case core::PromptKind::CreativeApp: {
 		// Deliberately phrased as a question about what the user is
@@ -230,6 +246,12 @@ void PromptWidget::onSecondaryClicked()
 	const bool acceptAction = (kind_ == core::PromptKind::GameClosed);
 	hide();
 	emit responded(acceptAction, false);
+}
+
+void PromptWidget::onElsewhereClicked()
+{
+	hide();
+	emit noGameResponded(core::NoGameChoice::PlayingElsewhere);
 }
 
 void PromptWidget::onTertiaryClicked()

@@ -190,6 +190,19 @@ void DetectionStateMachine::confirmPendingCandidate()
 	noGameIdleAsked_ = false;
 	idleSince_.reset();
 
+	// ...and it ends a "playing on another device" hold, but only for a
+	// real game: a creative app opening says nothing about what the user
+	// is playing, so the prompt-only branch below leaves the hold alone.
+	// Cleared here, ahead of the switch decision, so this game switches
+	// exactly as it would have with no hold at all.
+	const bool realGame = !isPromptOnly(game);
+	if (realGame && playingElsewhere_) {
+		playingElsewhere_ = false;
+		listener_.onLogEntry(L"\"" + game.displayName +
+					      L"\" started — no longer treating this as a game on another device",
+				      currentLiveCategory_);
+	}
+
 	// ...and a game confirming ends the no-game-while-live question too:
 	// any outstanding prompt of that kind is moot and the re-ask schedule
 	// is over (it re-arms when this game goes away again).
@@ -435,7 +448,7 @@ void DetectionStateMachine::onTick()
 
 bool DetectionStateMachine::canAskNoGame() const
 {
-	return live_ && promptsEnabled_ && !gameClosedSuppressed_ && !streamEndingHold_;
+	return live_ && promptsEnabled_ && !gameClosedSuppressed_ && !streamEndingHold_ && !playingElsewhere_;
 }
 
 void DetectionStateMachine::raiseNoGamePrompt(Clock::time_point at, const std::optional<detection::InstalledGame> &relevant)
@@ -485,6 +498,7 @@ void DetectionStateMachine::respondNoGame(NoGameChoice choice)
 		break;
 	case NoGameChoice::JustChatting:
 		noGameAskAt_.reset();
+		playingElsewhere_ = false; // The user is back on this PC's stream; the fallback is their answer.
 		if (!suspended()) {
 			// An explicit answer to a question that names the category,
 			// so deliberately NOT gated on fallbackEnabled_ (same reasoning
@@ -497,6 +511,10 @@ void DetectionStateMachine::respondNoGame(NoGameChoice choice)
 						      L"\" as it is",
 					      currentLiveCategory_);
 		}
+		break;
+	case NoGameChoice::PlayingElsewhere:
+		noGameAskAt_.reset();
+		setPlayingElsewhere(true);
 		break;
 	case NoGameChoice::Waiting:
 		snoozeNoGame(at);
@@ -518,6 +536,13 @@ void DetectionStateMachine::serviceIdlePrompt(Clock::time_point at)
 	// Trigger D stands down - two different questions about the same
 	// silence is exactly what the idle prompt's own design avoids.
 	if (live_) {
+		idleSince_.reset();
+		return;
+	}
+
+	// Playing on another device: nothing to ask, and the clock stays
+	// stopped so it starts fresh once the hold ends.
+	if (playingElsewhere_) {
 		idleSince_.reset();
 		return;
 	}
@@ -802,6 +827,81 @@ bool DetectionStateMachine::streamEndingHold() const
 	return streamEndingHold_;
 }
 
+void DetectionStateMachine::setPlayingElsewhere(bool on, const std::wstring &categoryName)
+{
+	if (on == playingElsewhere_)
+		return;
+	playingElsewhere_ = on;
+	if (!on)
+		return;
+
+	// Whatever was being asked is answered: drop a no-game prompt without
+	// side effects and cancel the re-ask schedule.
+	noGameAskAt_.reset();
+	if (promptOutstanding_ && (promptKind_ == PromptKind::GameClosed || promptKind_ == PromptKind::NoGameIdle))
+		promptOutstanding_ = false;
+
+	const std::wstring &name = categoryName.empty() ? currentLiveCategory_ : categoryName;
+	std::wstring line = name.empty() ? L"Playing on another device" : L"Playing \"" + name + L"\" on another device";
+	line += L" — not asking again until a PC game starts or the stream ends";
+	listener_.onLogEntry(line, currentLiveCategory_);
+}
+
+void DetectionStateMachine::notePlayingElsewhere(const std::wstring &categoryName)
+{
+	setPlayingElsewhere(true, categoryName);
+}
+
+void DetectionStateMachine::clearPlayingElsewhere()
+{
+	if (!playingElsewhere_)
+		return;
+	playingElsewhere_ = false;
+	if (live_ && !activeGame_ && !pendingCandidate_)
+		snoozeNoGame(now()); // Still nothing running: resume the question after a quiet interval.
+	listener_.onLogEntry(L"Asking again when no game is running", currentLiveCategory_);
+}
+
+void DetectionStateMachine::switchBackToPcGame()
+{
+	playingElsewhere_ = false;
+
+	// Start detection over for anything already seen. A real game that
+	// was the incumbent when the hold was set would otherwise be treated as
+	// "already handled" and never switched to; forgetting it makes the next
+	// poll a normal confirmation. A creative app is left alone (it never
+	// switches anyway) and so is a grace window, which is about a game that
+	// has already gone.
+	if (state_ == State::Active || state_ == State::Pending) {
+		activeGame_.reset();
+		pendingCandidate_.reset();
+		pendingConfirmPolls_ = 0;
+		pendingCameFromGrace_ = false;
+		state_ = State::Idle;
+	}
+	appliedCategoryName_.clear();
+	reapplySuppressed_ = false;
+
+	noGameAskAt_.reset();
+	if (live_ && state_ != State::Grace)
+		snoozeNoGame(now());
+	idleSince_.reset(); // The offline idle prompt gets its full window again too.
+
+	listener_.onLogEntry(L"Switching back to a PC game — detection is on, will ask in " +
+				      std::to_wstring(timing_.noGameSnoozeS) + L"s if nothing starts",
+			      currentLiveCategory_);
+}
+
+bool DetectionStateMachine::playingElsewhere() const
+{
+	return playingElsewhere_;
+}
+
+bool DetectionStateMachine::pcGameActive() const
+{
+	return activeGame_ && !isPromptOnly(*activeGame_);
+}
+
 void DetectionStateMachine::setNoGameIdleEnabled(bool enabled)
 {
 	noGameIdleEnabled_ = enabled;
@@ -890,6 +990,11 @@ void DetectionStateMachine::setLive(bool live)
 		// because nothing else on screen changes at this moment, so the
 		// activity log is the only place it can be seen to have
 		// happened.
+		if (playingElsewhere_) {
+			playingElsewhere_ = false;
+			listener_.onLogEntry(L"Stream stopped — no longer treating this as a game on another device", L"");
+		}
+
 		if (streamEndingHold_) {
 			streamEndingHold_ = false;
 			listener_.onLogEntry(L"Stream stopped — stream-ending hold cleared, automatic switching is back on",

@@ -49,6 +49,7 @@
  *                        "Stream ending soon" -> StreamEnding
  *                        "Switch to <fallback>" -> JustChatting
  *                        "Waiting for a game ..." -> Waiting
+ *                        "Playing on another device" -> PlayingElsewhere
  *        (the older table below still describes the other kinds):
  *        NoGameIdle:     "Set to <fallback>" -> responded(true, false)
  *                        "Wait for a game" -> responded(false, false)
@@ -116,7 +117,7 @@ public:
 	void dismissWithoutResponse();
 
 signals:
-	// The three-way answer to the no-game-while-live prompt
+	// The answer to the no-game-while-live prompt
 	// (PromptKind::GameClosed) - see class doc comment #3.
 	void noGameResponded(core::NoGameChoice choice);
 
@@ -141,6 +142,7 @@ private:
 	void onPrimaryClicked();
 	void onSecondaryClicked();
 	void onTertiaryClicked();
+	void onElsewhereClicked();
 
 	QBoxLayout *buttonRow_ = nullptr;
 	core::PromptKind kind_ = core::PromptKind::GoLiveMismatch;
@@ -149,6 +151,7 @@ private:
 	QPushButton *primaryButton_ = nullptr;
 	QPushButton *secondaryButton_ = nullptr;
 	QPushButton *tertiaryButton_ = nullptr;
+	QPushButton *elsewhereButton_ = nullptr; // GameClosed only: "Playing on another device".
 	QCheckBox *dontAskAgainCheckbox_ = nullptr;
 
 	// "Or set it to:" - see showPrompt(). One widget so it hides as a unit.

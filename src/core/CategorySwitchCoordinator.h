@@ -270,6 +270,13 @@ public:
 	// names the category the user chose instead of "the fallback category".
 	void applyCategoryByName(const std::wstring &categoryName, bool live, CompletionCallback onComplete = nullptr);
 
+	// Same sequence for a category the user picked from a Twitch search
+	// result, where the id is already in hand: skips the name lookup. An
+	// empty id is refused here (it would unset the category on Twitch) and
+	// falls back to resolving the name.
+	void applyCategoryById(const std::wstring &categoryId, const std::wstring &categoryName, bool live,
+			       CompletionCallback onComplete = nullptr);
+
 private:
 	// Shared body of applyFallback()/applyCategoryByName().
 	void applyNamedCategory(const std::wstring &categoryName, bool live, CompletionCallback onComplete,

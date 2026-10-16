@@ -206,11 +206,15 @@ enum class PromptKind {
 	NoGameIdle,     // Trigger D: nothing detected for noGameIdlePromptS. NOT gated on live-ness.
 };
 
-// The three answers to the no-game-while-live prompt (PromptKind::GameClosed).
+// The answers to the no-game-while-live prompt (PromptKind::GameClosed).
 enum class NoGameChoice {
 	StreamEnding, // Begin the stream-ending hold; stop asking until a game starts or the user clears it.
 	JustChatting, // Apply the fallback category once, then stop asking until a game comes and goes.
 	Waiting,      // Updating / loading / installing: keep the category, keep scanning, ask again later.
+	// Playing something that is not on this PC (a console, a handheld,
+	// another computer): keep the category and stop asking until a PC game
+	// starts or the stream ends. See notePlayingElsewhere().
+	PlayingElsewhere,
 };
 
 // What a live category verification concluded - see
@@ -422,6 +426,36 @@ public:
 	void clearStreamEndingHold();
 	bool streamEndingHold() const;
 
+	// --- Playing elsewhere (see NoGameChoice::PlayingElsewhere) ---------
+	// "The game is not on this PC." A hold on the no-game questions only:
+	// no GameClosed prompt (first ask, go-live ask or snooze re-ask) and no
+	// NoGameIdle prompt is raised while it is on, any outstanding one is
+	// dismissed without side effects, and the category is never touched
+	// because of "no game". Detection keeps running. It is set by
+	// respondNoGame(PlayingElsewhere) or by the dock calling
+	// notePlayingElsewhere() after the user sets a category with nothing
+	// running, and it ends when a real (non prompt-only) game confirms,
+	// when the stream stops, or on clearPlayingElsewhere(). Going LIVE does
+	// not clear it, so a category set before going live survives go-live.
+	// categoryName is only for the log line; empty falls back to the last
+	// category the channel was known to be in.
+	void notePlayingElsewhere(const std::wstring &categoryName = std::wstring());
+	void clearPlayingElsewhere();
+	bool playingElsewhere() const;
+
+	// The explicit "I'm back on this PC" button. Ends the hold and makes
+	// detection start over now rather than waiting for the next game to
+	// happen along: a game that is already running is forgotten as the
+	// incumbent, so the next poll confirms it again and switches to it as
+	// normal. Does NOT ask the no-game question straight away - the game
+	// may still be launching - it schedules the usual snooze instead.
+	void switchBackToPcGame();
+
+	// True when a real (non prompt-only) game is the active one. A creative
+	// app being open is activeGame() too, but it does not mean the user is
+	// playing on this PC, so callers asking "is a PC game running" want this.
+	bool pcGameActive() const;
+
 	// --- Trigger D, the no-game idle prompt (see the class comment) -----
 	// The caller's gate on whether Trigger D may fire at all. OFF until
 	// somebody turns it on, deliberately: this is the only prompt that
@@ -518,6 +552,7 @@ private:
 	void raiseNoGamePrompt(Clock::time_point at, const std::optional<detection::InstalledGame> &relevant);
 	void snoozeNoGame(Clock::time_point at);
 	void serviceNoGameLive(Clock::time_point at);
+	void setPlayingElsewhere(bool on, const std::wstring &categoryName = std::wstring());
 	std::uint32_t liveCheckIntervalS() const;
 	void noteSwitchRequested(bool forGame);
 
@@ -534,6 +569,7 @@ private:
 	bool manualLock_ = false;
 	bool automationPaused_ = false; // Flap breaker.
 	bool streamEndingHold_ = false; // Self-clearing manual lock - see class comment.
+	bool playingElsewhere_ = false; // Silences the no-game prompts only - see notePlayingElsewhere().
 	bool live_ = false;
 	bool promptsEnabled_ = true;
 	bool fallbackEnabled_ = false; // Off by default: hold-last-category is the default (project brief).

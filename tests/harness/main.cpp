@@ -2487,6 +2487,254 @@ void RunNoGameWhileLiveScenarios()
 }
 
 // ---------------------------------------------------------------------
+// SECTION 2h: "playing on another device".
+//
+// Born of a real stream: Pokemon UNITE on a Switch, category set by hand
+// before going live, no PC game ever detected - and the no-game prompt
+// asked about 70 times in 3.5 hours. Unanswered prompts and "Waiting"
+// must KEEP asking (that is wanted); what was missing is a way to say
+// "it's not on this PC".
+// ---------------------------------------------------------------------
+
+void RunPlayingElsewhereScenarios()
+{
+	std::printf("\n=== SECTION 2h: playing on another device ===\n");
+
+	TimingConstants timing;
+	timing.confirmPolls = 1;
+	timing.cleanExitGraceS = 30;
+	timing.crashGraceS = 30;
+	timing.noGameSnoozeS = 120;
+	timing.noGameLivePromptTimeoutS = 60;
+	timing.flapBreakerN = 50;
+	const InstalledGame rivals = MakeGame(L"Marvel Rivals", Platform::Steam, L"2767030");
+	const DetectedGame dRivals = MakeDetected(rivals, 800);
+
+	auto tickFor = [](DetectionStateMachine &sm, FakeClock &clock, int seconds) {
+		for (int elapsed = 0; elapsed < seconds; elapsed += 5) {
+			clock.advanceS(5);
+			sm.onTick();
+		}
+	};
+
+	{
+		std::printf("-- Answering 'playing on another device' stops the re-asks --\n");
+		FakeClock clock;
+		ReapplyListener listener;
+		DetectionStateMachine sm(listener, timing);
+		sm.setTimeSourceForTesting([&] { return clock.now(); });
+		sm.setLive(true);
+		sm.onLiveCategoryKnown(L"Pokemon UNITE");
+		tickFor(sm, clock, 120);
+		Check(sm.promptOutstanding() && sm.outstandingPromptKind() == PromptKind::GameClosed, "the no-game prompt is up");
+		sm.respondNoGame(NoGameChoice::PlayingElsewhere);
+		Check(sm.playingElsewhere() && !sm.promptOutstanding(), "the hold is on and the prompt is closed");
+		Check(LogContains(listener, L"on another device"), "the answer is logged");
+		const int promptsBefore = listener.promptCount;
+		tickFor(sm, clock, 600);
+		Check(listener.promptCount == promptsBefore, "no re-ask over 10 minutes of ticks");
+		Check(listener.applyFallbackCount == 0 && listener.switchInCount == 0, "the category is never touched");
+		Check(!sm.streamEndingHold() && !sm.isManuallyLocked(), "it is not a stream-ending hold or a manual lock");
+	}
+	{
+		std::printf("-- Set while offline, it survives going live and silences the go-live ask --\n");
+		FakeClock clock;
+		ReapplyListener listener;
+		DetectionStateMachine sm(listener, timing);
+		sm.setTimeSourceForTesting([&] { return clock.now(); });
+		sm.notePlayingElsewhere(L"Pokemon UNITE");
+		Check(sm.playingElsewhere(), "set while offline");
+		sm.setLive(true);
+		Check(sm.playingElsewhere(), "going live does not clear it");
+		tickFor(sm, clock, 600);
+		Check(listener.promptCount == 0, "no go-live no-game ask");
+		Check(listener.applyFallbackCount == 0, "and nothing applied");
+	}
+	{
+		std::printf("-- Set mid-prompt, it dismisses the prompt without side effects --\n");
+		FakeClock clock;
+		ReapplyListener listener;
+		DetectionStateMachine sm(listener, timing);
+		sm.setTimeSourceForTesting([&] { return clock.now(); });
+		sm.setLive(true);
+		tickFor(sm, clock, 120);
+		Check(sm.promptOutstanding(), "prompt is up");
+		sm.notePlayingElsewhere(L"Hades II");
+		Check(!sm.promptOutstanding(), "dismissed");
+		Check(listener.applyFallbackCount == 0, "no side effects");
+		tickFor(sm, clock, 600);
+		Check(listener.promptCount == 1, "and it stays gone");
+	}
+	{
+		std::printf("-- A PC game confirming clears it and switches normally --\n");
+		FakeClock clock;
+		ReapplyListener listener;
+		DetectionStateMachine sm(listener, timing);
+		sm.setTimeSourceForTesting([&] { return clock.now(); });
+		sm.setLive(true);
+		sm.notePlayingElsewhere(L"Pokemon UNITE");
+		sm.onPollResult(dRivals);
+		Check(!sm.playingElsewhere(), "cleared by the game");
+		Check(listener.switchInCount == 1, "and the game switches exactly as it would have without the hold");
+		Check(LogContains(listener, L"no longer treating this as a game on another device"), "the clear is logged");
+	}
+	{
+		std::printf("-- A prompt-only app opening does NOT clear it --\n");
+		FakeClock clock;
+		ReapplyListener listener;
+		DetectionStateMachine sm(listener, timing);
+		sm.setTimeSourceForTesting([&] { return clock.now(); });
+		const InstalledGame editor = MakeGame(L"Visual Studio Code", Platform::Steam, L"9");
+		sm.setPromptOnlyPredicate([&](const InstalledGame &g) { return g.displayName == editor.displayName; });
+		sm.setLive(true);
+		sm.notePlayingElsewhere(L"Pokemon UNITE");
+		sm.onPollResult(MakeDetected(editor, 801));
+		Check(sm.playingElsewhere(), "still on");
+		Check(!sm.pcGameActive(), "an open editor is not a PC game");
+		Check(listener.switchInCount == 0, "and nothing switched");
+	}
+	{
+		std::printf("-- Stopping the stream clears it --\n");
+		FakeClock clock;
+		ReapplyListener listener;
+		DetectionStateMachine sm(listener, timing);
+		sm.setTimeSourceForTesting([&] { return clock.now(); });
+		sm.setLive(true);
+		sm.notePlayingElsewhere(L"Pokemon UNITE");
+		sm.setLive(false);
+		Check(!sm.playingElsewhere(), "cleared by setLive(false)");
+		sm.setLive(true);
+		tickFor(sm, clock, 125);
+		Check(sm.promptOutstanding(), "the next stream asks again as usual");
+	}
+	{
+		std::printf("-- 'Resume asking' re-arms the question --\n");
+		FakeClock clock;
+		ReapplyListener listener;
+		DetectionStateMachine sm(listener, timing);
+		sm.setTimeSourceForTesting([&] { return clock.now(); });
+		sm.setLive(true);
+		sm.notePlayingElsewhere(L"Pokemon UNITE");
+		tickFor(sm, clock, 300);
+		Check(listener.promptCount == 0, "quiet while held");
+		sm.clearPlayingElsewhere();
+		Check(!sm.playingElsewhere(), "cleared");
+		tickFor(sm, clock, 125);
+		Check(sm.promptOutstanding(), "asks again after the usual interval");
+	}
+	{
+		std::printf("-- 'Switching to a PC game' with a game already running switches at the next poll --\n");
+		FakeClock clock;
+		ReapplyListener listener;
+		DetectionStateMachine sm(listener, timing);
+		sm.setTimeSourceForTesting([&] { return clock.now(); });
+		sm.setLive(true);
+		sm.onLiveCategoryKnown(L"Pokemon UNITE");
+		// Hold set while a game is (somehow) the incumbent: the worst case,
+		// since nothing would ever re-confirm it.
+		sm.onPollResult(dRivals);
+		const int switchesBefore = listener.switchInCount;
+		sm.notePlayingElsewhere(L"Pokemon UNITE");
+		Check(sm.playingElsewhere(), "hold set over a running game");
+		sm.switchBackToPcGame();
+		Check(!sm.playingElsewhere(), "hold cleared");
+		Check(LogContains(listener, L"Switching back to a PC game"), "logged");
+		sm.onPollResult(dRivals);
+		Check(listener.switchInCount == switchesBefore + 1, "the running game is switched to on the next poll");
+		Check(!sm.promptOutstanding(), "no prompt");
+	}
+	{
+		std::printf("-- 'Switching to a PC game' with nothing running asks only after the snooze --\n");
+		FakeClock clock;
+		ReapplyListener listener;
+		DetectionStateMachine sm(listener, timing);
+		sm.setTimeSourceForTesting([&] { return clock.now(); });
+		sm.setLive(true);
+		sm.notePlayingElsewhere(L"Pokemon UNITE");
+		tickFor(sm, clock, 600);
+		sm.switchBackToPcGame();
+		Check(!sm.promptOutstanding(), "no prompt at the instant of the click");
+		tickFor(sm, clock, 115);
+		Check(!sm.promptOutstanding() && listener.promptCount == 0, "none before 120 s");
+		tickFor(sm, clock, 10);
+		Check(sm.promptOutstanding() && listener.promptCount == 1, "asked once 120 s have passed with nothing detected");
+	}
+	{
+		std::printf("-- 'Switch to Just Chatting' ends it --\n");
+		FakeClock clock;
+		ReapplyListener listener;
+		DetectionStateMachine sm(listener, timing);
+		sm.setTimeSourceForTesting([&] { return clock.now(); });
+		sm.setLive(true);
+		tickFor(sm, clock, 120);
+		sm.respondNoGame(NoGameChoice::PlayingElsewhere);
+		Check(sm.playingElsewhere(), "on");
+		sm.clearPlayingElsewhere();
+		tickFor(sm, clock, 120);
+		sm.respondNoGame(NoGameChoice::JustChatting);
+		Check(!sm.playingElsewhere() && listener.applyFallbackCount == 1, "fallback applied, hold off");
+	}
+	{
+		std::printf("-- Regression: an UNANSWERED prompt still re-asks --\n");
+		FakeClock clock;
+		ReapplyListener listener;
+		DetectionStateMachine sm(listener, timing);
+		sm.setTimeSourceForTesting([&] { return clock.now(); });
+		sm.setLive(true);
+		tickFor(sm, clock, 120);
+		Check(sm.promptOutstanding(), "asked");
+		tickFor(sm, clock, 65);
+		Check(!sm.promptOutstanding(), "times out");
+		Check(!sm.playingElsewhere(), "without setting any hold");
+		tickFor(sm, clock, 125);
+		Check(sm.promptOutstanding() && listener.promptCount == 2, "and asks again after the snooze");
+	}
+	{
+		std::printf("-- Regression: 'Waiting for a game' still re-asks --\n");
+		FakeClock clock;
+		ReapplyListener listener;
+		DetectionStateMachine sm(listener, timing);
+		sm.setTimeSourceForTesting([&] { return clock.now(); });
+		sm.setLive(true);
+		tickFor(sm, clock, 120);
+		sm.respondNoGame(NoGameChoice::Waiting);
+		Check(!sm.playingElsewhere(), "no hold");
+		tickFor(sm, clock, 125);
+		Check(sm.promptOutstanding() && listener.promptCount == 2, "asks again");
+	}
+	{
+		std::printf("-- The idle (offline) prompt is silenced too --\n");
+		TimingConstants withIdle = timing;
+		withIdle.noGameIdlePromptS = 10;
+		FakeClock clock;
+		ReapplyListener listener;
+		DetectionStateMachine sm(listener, withIdle);
+		sm.setTimeSourceForTesting([&] { return clock.now(); });
+		sm.setNoGameIdleEnabled(true);
+		sm.notePlayingElsewhere(L"Pokemon UNITE");
+		tickFor(sm, clock, 300);
+		Check(listener.promptCount == 0, "no idle prompt while held");
+		sm.clearPlayingElsewhere();
+		tickFor(sm, clock, 30);
+		Check(listener.promptCount == 1, "and it fires once the hold is gone");
+	}
+	{
+		std::printf("-- It coexists with the stream-ending hold --\n");
+		FakeClock clock;
+		ReapplyListener listener;
+		DetectionStateMachine sm(listener, timing);
+		sm.setTimeSourceForTesting([&] { return clock.now(); });
+		sm.setLive(true);
+		sm.notePlayingElsewhere(L"Pokemon UNITE");
+		sm.beginStreamEndingHold();
+		sm.clearStreamEndingHold();
+		Check(sm.playingElsewhere(), "releasing the stream-ending hold leaves it alone");
+		tickFor(sm, clock, 300);
+		Check(listener.promptCount == 0, "still quiet");
+	}
+}
+
+// ---------------------------------------------------------------------
 // SECTION: RecentCategories - the ordering rules behind PluginConfig's
 // persisted "recentCategories" list. PluginConfig itself needs libobs's
 // obs_data (the harness links none), so the rules live in an OBS-free
@@ -2567,6 +2815,7 @@ int main()
 	RunIdlePromptScenarios();
 	RunLiveVerificationScenarios();
 	RunNoGameWhileLiveScenarios();
+	RunPlayingElsewhereScenarios();
 	RunCoordinatorScenarios();
 	RunRecentCategoryScenarios();
 	RunInstallIndexScenario();

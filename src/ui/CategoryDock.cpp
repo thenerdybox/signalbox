@@ -12,6 +12,7 @@
 
 #include <QClipboard>
 #include <QComboBox>
+#include <QCompleter>
 #include <QDateTime>
 #include <QDockWidget>
 #include <QDesktopServices>
@@ -21,6 +22,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
+#include <QLineEdit>
 #include <QListWidget>
 #include <QListWidgetItem>
 #include <QPushButton>
@@ -28,6 +30,7 @@
 #include <QScrollBar>
 #include <QShowEvent>
 #include <QSignalBlocker>
+#include <QStringListModel>
 #include <QTimer>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -314,6 +317,62 @@ void CategoryDock::buildUi()
 	connect(recentCombo_, &QComboBox::activated, this, &CategoryDock::onRecentCategoryActivated);
 	statusLayout->addWidget(recentCombo_);
 
+	// For a category that is not in the recent list, or a game that is not
+	// on this PC at all. Typing asks Twitch (debounced, and only from two
+	// characters) so there is nothing to poll and nothing happens while the
+	// box sits idle. Unfiltered popup mode, because Twitch's own matching
+	// is wider than a substring test on the list would be (an accented
+	// title found by its plain-letter spelling, for one).
+	categorySearchEdit_ = new QLineEdit(statusGroup);
+	categorySearchEdit_->setPlaceholderText(QStringLiteral("Search Twitch categories..."));
+	categorySearchEdit_->setClearButtonEnabled(true);
+	categorySearchEdit_->setToolTip(QStringLiteral("Type to find any Twitch category and set it right now. "
+						       "Automatic switching carries on as normal afterwards."));
+	// Ignored, not Expanding: the box takes whatever width the dock has and
+	// its own size hint cannot widen a narrow dock.
+	categorySearchEdit_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+	categorySearchEdit_->setMinimumWidth(40);
+	categorySuggestionModel_ = new QStringListModel(this);
+	categoryCompleter_ = new QCompleter(categorySuggestionModel_, this);
+	categoryCompleter_->setCaseSensitivity(Qt::CaseInsensitive);
+	categoryCompleter_->setCompletionMode(QCompleter::UnfilteredPopupCompletion);
+	categorySearchEdit_->setCompleter(categoryCompleter_);
+	categorySearchTimer_ = new QTimer(this);
+	categorySearchTimer_->setSingleShot(true);
+	categorySearchTimer_->setInterval(300);
+	connect(categorySearchEdit_, &QLineEdit::textChanged, this, &CategoryDock::onCategorySearchTextChanged);
+	connect(categorySearchTimer_, &QTimer::timeout, this, &CategoryDock::runCategorySearch);
+	connect(categoryCompleter_, QOverload<const QString &>::of(&QCompleter::activated), this,
+		[this](const QString &picked) { applySearchedCategory(picked); });
+	connect(categorySearchEdit_, &QLineEdit::returnPressed, this,
+		[this]() { applySearchedCategory(categorySearchEdit_->text()); });
+	statusLayout->addWidget(categorySearchEdit_);
+
+	// The streamer said (by setting a category with nothing running) that
+	// the game is elsewhere, so the no-game questions are off. Said out loud
+	// for the same reason as streamEndingBanner_: a silent hold looks like a
+	// broken prompt. Unlike that one, this has a button, because nothing
+	// else in the dock undoes it short of a game starting or the stream
+	// ending.
+	playingElsewhereBanner_ = new QLabel(statusGroup);
+	playingElsewhereBanner_->setWordWrap(true);
+	playingElsewhereBanner_->setVisible(false);
+	playingElsewhereBanner_->setStyleSheet(QStringLiteral("QLabel { background: #1e3a4a; color: #bfe4f5; "
+							       "border: 1px solid #37718c; border-radius: 3px; padding: 6px; }"));
+	statusLayout->addWidget(playingElsewhereBanner_);
+	// Full width and directly under the banner, so it reads as the
+	// counterpart of the prompt's "Playing on another device" answer.
+	resumeAskingButton_ = new QPushButton(QStringLiteral("Switching to a PC game"), statusGroup);
+	resumeAskingButton_->setVisible(false);
+	resumeAskingButton_->setToolTip(QStringLiteral("Back on this PC: SignalBox starts detecting and switching again "
+						       "right away, without restarting the stream."));
+	connect(resumeAskingButton_, &QPushButton::clicked, this, [this]() {
+		stateMachine_.switchBackToPcGame();
+		updateCountdownTimerState();
+		refreshPresentationIfVisible();
+	});
+	statusLayout->addWidget(resumeAskingButton_);
+
 	// A hold that cannot be seen is the 45-minute dead zone again in a
 	// different costume: the dock would go on listing a detected game and
 	// counting polls while quietly changing nothing. Same reasoning as
@@ -474,23 +533,22 @@ void CategoryDock::wirePromptWidget()
 	// be answered (never left outstanding) before the category is applied.
 	connect(promptWidget_, &PromptWidget::recentCategoryChosen, this,
 		[this](core::PromptKind kind, const QString &categoryName) {
-			if (kind == core::PromptKind::GameClosed) {
-				// Same state-machine answer as "Waiting for a game": the
-				// prompt closes and the question snoozes rather than
-				// returning while they are mid-switch.
-				stateMachine_.respondNoGame(core::NoGameChoice::Waiting);
-			} else {
-				// NoGameIdle: the decline answer ("Wait for a game"), not
-				// the accept - accept would apply the FALLBACK category.
-				stateMachine_.respondToPrompt(false, false);
-			}
+			// Naming a category with no game running is "playing on another
+			// device": it closes whichever no-game prompt is up (and, for
+			// NoGameIdle, does not apply the FALLBACK the way its accept
+			// would) and stops the question coming back every couple of
+			// minutes the way "Waiting" does. Set here, ahead of the apply,
+			// so the prompt is answered before anything else can raise one.
+			// Both prompts only exist while no game is running.
+			(void)kind;
+			stateMachine_.notePlayingElsewhere(categoryName.toStdWString());
 			syncPromptWidgetVisibility(); // Also dismisses the notification card.
 			applyRecentCategory(categoryName);
 			refreshPresentationIfVisible();
 			updateCountdownTimerState();
 		});
 
-	// The no-game-while-live prompt has three answers of its own.
+	// The no-game-while-live prompt has four answers of its own.
 	connect(promptWidget_, &PromptWidget::noGameResponded, this, [this](core::NoGameChoice choice) {
 		stateMachine_.respondNoGame(choice);
 		syncPromptWidgetVisibility();
@@ -726,6 +784,13 @@ void CategoryDock::attachTwitchClient(const QString &accessToken, const QString 
 			refreshRecentCategories();
 		}
 	}
+
+	// A fresh client means any suggestions on screen came from the old one.
+	categorySuggestionModel_->setStringList(QStringList());
+	categorySuggestionIds_.clear();
+	categorySuggestionNames_.clear();
+	connect(twitchClient_.get(), &twitch::TwitchClient::categorySuggestionsReady, this,
+		&CategoryDock::onCategorySuggestions);
 
 	connect(twitchClient_.get(), &twitch::TwitchClient::currentUserResolved, this,
 		[this](QString userId, QString login) {
@@ -1347,6 +1412,17 @@ void CategoryDock::refreshStatusLabels()
 	// disconnected promises something it cannot do.
 	justChattingButton_->setEnabled(!currentTokens_.accessToken.isEmpty());
 	recentCombo_->setEnabled(!currentTokens_.accessToken.isEmpty()); // Same reason.
+	categorySearchEdit_->setEnabled(!currentTokens_.accessToken.isEmpty()); // And again.
+
+	const bool elsewhere = stateMachine_.playingElsewhere();
+	playingElsewhereBanner_->setVisible(elsewhere);
+	resumeAskingButton_->setVisible(elsewhere);
+	if (elsewhere) {
+		playingElsewhereBanner_->setText(
+			(liveCategory_.isEmpty() ? QStringLiteral("Playing on another device.")
+						 : QStringLiteral("Playing \"%1\" on another device.").arg(liveCategory_)) +
+			QStringLiteral(" SignalBox won't ask until a game starts here or the stream ends."));
+	}
 
 	const bool paused = stateMachine_.isAutomationPaused();
 	pausedBanner_->setVisible(paused);
@@ -1509,7 +1585,91 @@ void CategoryDock::applyRecentCategory(const QString &categoryName)
 	// not gated on onlyWhileLive() (a direct instruction, not automation), and
 	// routed through the coordinator so the external-writer guard learns it.
 	stateMachine_.noteUserCategoryChoice(); // Their choice: verification must not undo it a minute later.
+	noteCategoryChosenFromSignalBox(categoryName);
 	coordinator_.applyCategoryByName(categoryName.toStdWString(), stateMachine_.isLive());
+	refreshPresentationIfVisible();
+}
+
+void CategoryDock::noteCategoryChosenFromSignalBox(const QString &categoryName)
+{
+	if (stateMachine_.pcGameActive())
+		return; // A manual override of a detected game: existing behaviour, nothing more.
+	stateMachine_.notePlayingElsewhere(categoryName.toStdWString());
+	syncPromptWidgetVisibility(); // The hold drops any outstanding no-game prompt.
+	updateCountdownTimerState();
+}
+
+void CategoryDock::onCategorySearchTextChanged()
+{
+	// Restarting the timer on every keystroke is the debounce. Anything
+	// already in flight is judged by the stale-result rule in
+	// onCategorySuggestions() when it lands, not cancelled here.
+	if (categorySearchEdit_->text().trimmed().size() < 2) {
+		categorySearchTimer_->stop();
+		categorySuggestionModel_->setStringList(QStringList());
+		categorySuggestionIds_.clear();
+		categorySuggestionNames_.clear();
+		return;
+	}
+	categorySearchTimer_->start();
+}
+
+void CategoryDock::runCategorySearch()
+{
+	const QString query = categorySearchEdit_->text().trimmed();
+	if (query.size() < 2 || !twitchClient_)
+		return;
+	twitchClient_->searchCategorySuggestions(query);
+}
+
+void CategoryDock::onCategorySuggestions(const QString &query, const QVector<twitch::CategoryMatch> &matches)
+{
+	// Results arrive asynchronously, and by then the box may say something
+	// else (or nothing, after a pick). The signal carries the query it
+	// answers, so an answer for anything but the current text is dropped.
+	if (query != categorySearchEdit_->text().trimmed())
+		return;
+
+	QStringList names;
+	categorySuggestionIds_.clear();
+	categorySuggestionNames_.clear();
+	for (const twitch::CategoryMatch &match : matches) {
+		if (match.gameName.isEmpty() || match.gameId.isEmpty())
+			continue;
+		const QString key = match.gameName.toLower();
+		if (categorySuggestionIds_.contains(key))
+			continue;
+		categorySuggestionIds_.insert(key, match.gameId);
+		categorySuggestionNames_.insert(key, match.gameName);
+		names.push_back(match.gameName);
+	}
+	categorySuggestionModel_->setStringList(names);
+	if (!names.isEmpty() && categorySearchEdit_->hasFocus())
+		categoryCompleter_->complete(); // Show the new list under the box.
+}
+
+void CategoryDock::applySearchedCategory(const QString &typedOrPicked)
+{
+	// Only a name Twitch actually returned is applied; free text that
+	// matches nothing is left in the box for the user to keep editing.
+	const QString key = typedOrPicked.trimmed().toLower();
+	const auto idIt = categorySuggestionIds_.constFind(key);
+	if (idIt == categorySuggestionIds_.constEnd())
+		return;
+	const QString name = categorySuggestionNames_.value(key);
+	const QString id = *idIt;
+
+	categorySearchTimer_->stop();
+	categorySearchEdit_->clear();
+	// The completer writes the picked text back into the box after
+	// activated() returns; clear once more after it has.
+	QTimer::singleShot(0, categorySearchEdit_, &QLineEdit::clear);
+
+	stateMachine_.noteUserCategoryChoice(); // Their choice: verification must not undo it a minute later.
+	noteCategoryChosenFromSignalBox(name);
+	// The id is already in hand from the search, so skip the name lookup.
+	coordinator_.applyCategoryById(id.toStdWString(), name.toStdWString(), stateMachine_.isLive());
+	refreshPresentationIfVisible();
 }
 
 void CategoryDock::onRecentCategoryActivated(int index)

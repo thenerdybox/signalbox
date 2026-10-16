@@ -33,9 +33,22 @@ patch-notes page are both generated from it.
   your recent games as buttons, so one click sets the category and answers
   the question. The list starts with the games SignalBox has already
   looked up for you, so it is useful straight after updating.
+- **Search any Twitch category from the dock.** Start typing in "Search
+  Twitch categories..." and pick from Twitch's suggestions to set it, for
+  games SignalBox cannot see, like console, handheld or emulated games.
+- **Playing on another device.** The no-game question has a new answer,
+  "Playing on another device", that keeps your category and stops the
+  question until a game starts on this PC or the stream ends. Setting a
+  category from the search box or the recent list while no PC game is
+  running does the same, including before you go live. A "Switching to a PC
+  game" button turns detection straight back on mid-stream, without
+  restarting the stream. If you leave the question unanswered, it still asks
+  again every two minutes.
 
 ### Changed
 
+- Picking a recent game in the no-game question now counts as "Playing on
+  another device" instead of "Waiting for a game", so it stops asking.
 - **No more question about a mismatched category when you go live.** If a
   game is running and your channel shows a different category when you go
   live, SignalBox switches it to the game straight away. The question it used

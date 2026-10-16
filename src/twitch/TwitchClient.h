@@ -173,6 +173,15 @@ public:
 	// findCategoryByExactName().
 	void searchCategories(const QString &query);
 
+	// The same search for the dock's category search box. Shares
+	// searchCategories()'s cache, rate limiting and backoff, but answers on
+	// its own signal (categorySuggestionsReady, which carries the query) and
+	// fails under its own requestFailed context. It must not use
+	// categorySearchResults(): TwitchCategoryLookup answers its queued
+	// callbacks FIFO from that signal, so a search the user typed would be
+	// handed to a game switch that is waiting on a different query.
+	void searchCategorySuggestions(const QString &query);
+
 	// POST /helix/streams/markers. Fire-and-forget from the caller's
 	// perspective: failures (not live, VODs disabled) are silent-with-
 	// log per DESIGN.md Section 5, never surfaced as a user-facing error
@@ -204,6 +213,9 @@ signals:
 	void categoryChangeSucceeded(CategoryMatch category);
 	void categoryFound(std::optional<CategoryMatch> exactMatch);
 	void categorySearchResults(QVector<CategoryMatch> matches);
+	// Answer to searchCategorySuggestions(): the query as sent, so a caller
+	// that has since typed something else can drop it.
+	void categorySuggestionsReady(QString query, QVector<CategoryMatch> matches);
 	void streamMarkerCreated();
 	// human-readable, dock-safe; never a raw HTTP/JSON dump.
 	void requestFailed(QString context, QString reason);
@@ -212,6 +224,8 @@ signals:
 	void reauthRequired();
 
 private:
+	void runCategorySearch(const QString &query, bool forSuggestions);
+
 	struct HelixReplyOutcome {
 		bool ok = false;
 		bool unauthorized = false;  // HTTP 401
@@ -268,6 +282,11 @@ private:
 	// saving the owner asked for.
 	std::map<QString, std::optional<CategoryMatch>> exactCache_;
 	std::map<QString, QVector<CategoryMatch>> searchCache_;
+	// What the dock's search box has typed this session. Memory only, never
+	// written to category-cache.json: every keystroke prefix would pile up
+	// there forever, and a saved "pok" would never show a game Twitch adds
+	// later.
+	std::map<QString, QVector<CategoryMatch>> suggestionCache_;
 };
 
 } // namespace signalbox::twitch
