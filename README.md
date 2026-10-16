@@ -38,8 +38,8 @@ Free. Staying free.
 
 ## Installing
 
-1. Download the latest `SignalBox-Setup-x.y.z.exe` from
-   [Releases](https://github.com/TheNerdyBox/signalbox/releases).
+1. Download `SignalBox-Setup-x.y.z.exe` from the
+   [latest release](https://github.com/TheNerdyBox/signalbox/releases/latest).
 2. **Close OBS**, then run the installer.
 3. Open OBS → **View → Docks → SignalBox Category Monitor**.
 4. Connect your Twitch account in the dock. You'll get a short code to enter
