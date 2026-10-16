@@ -5,6 +5,17 @@ Changelog](https://keepachangelog.com/en/1.1.0/) format. This file is the
 single source of truth for release notes — GitHub Releases and the public
 patch-notes page are both generated from it.
 
+## [0.2.9] — 2026-10-16
+
+### Fixed
+
+- The installer's "View release notes" option at the end opened a page that
+  doesn't exist. It now opens the SignalBox patch notes.
+- If OBS is open when you run the installer, the message now says that setup
+  is closing and that you need to close OBS and run the installer again. It
+  used to say "close it before continuing" and then quietly exit, which looked
+  like the installer had done nothing.
+
 ## [0.2.8] — 2026-10-15
 
 ### Fixed
