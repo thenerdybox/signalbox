@@ -17,9 +17,9 @@
 #include "installer-version.iss"
 #define HomeURL        "https://thenerdybox.com"
 
-; NOTE: the release-notes page does not exist yet - it is still in design.
-; Change this one line when it is live.
-#define ReleaseNotesURL "https://thenerdybox.com/signalbox/release-notes"
+; The public patch notes page. Same URL as the version link in the dock
+; footer (CategoryDock.cpp) - keep the two in step.
+#define ReleaseNotesURL "https://thenerdybox.com/patch-notes/signalbox"
 
 [Setup]
 ; Identity is pinned to this GUID, not to the display name. Inno falls back
