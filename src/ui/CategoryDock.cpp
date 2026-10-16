@@ -467,6 +467,13 @@ void CategoryDock::buildUi()
 	auto *logLayout = new QVBoxLayout(logGroup);
 	activityLogView_ = new QListWidget(logGroup);
 	activityLogView_->setMinimumHeight(90); // In a scroll area the log would otherwise squash to nothing.
+	// Wrap long entries instead of cutting them off at the dock's edge: a
+	// narrow dock is the normal case, and a truncated line hides the part
+	// that says what happened.
+	activityLogView_->setWordWrap(true);
+	activityLogView_->setTextElideMode(Qt::ElideNone);
+	activityLogView_->setResizeMode(QListView::Adjust);
+	activityLogView_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
 	logLayout->addWidget(activityLogView_);
 	root->addWidget(logGroup, /*stretch=*/1);
 

@@ -5,7 +5,14 @@ Changelog](https://keepachangelog.com/en/1.1.0/) format. This file is the
 single source of truth for release notes — GitHub Releases and the public
 patch-notes page are both generated from it.
 
-## [0.2.7] — 2026-10-07
+## [0.2.8] — 2026-10-15
+
+### Fixed
+
+- Long lines in the dock's activity log wrap onto the next line instead of
+  being cut off at the edge of the dock.
+
+## [0.2.7] — 2026-10-15
 
 ### Added
 
