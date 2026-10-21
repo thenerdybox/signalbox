@@ -128,6 +128,18 @@ public:
 	bool idlePromptEnabled() const;
 	void setIdlePromptEnabled(bool enabled);
 
+	// --- Capture card recovery (see CaptureRecovery.h) ---
+	// Off by default. The source is stored by name; an empty name means
+	// none chosen.
+	std::wstring captureRecoverySource() const;
+	void setCaptureRecoverySource(std::wstring name);
+	bool captureRecoveryAuto() const;
+	void setCaptureRecoveryAuto(bool enabled);
+	int captureRecoveryBlackSeconds() const; // 2..60, default 5.
+	void setCaptureRecoveryBlackSeconds(int seconds);
+	std::wstring captureRecoveryResetCommand() const; // Optional program or shortcut; empty = none.
+	void setCaptureRecoveryResetCommand(std::wstring path);
+
 	// --- CategoryResolver tier 1 (DESIGN.md 1.5) ---
 	// Keyed by CategoryResolver::overrideKeyFor() - "platform:platformId"
 	// (preferred) or an absolute exe path fallback.
@@ -171,6 +183,10 @@ private:
 	bool promptsEnabled_ = true;
 	bool fallbackSwitchingEnabled_ = false; // Off by default - see project brief.
 	bool idlePromptEnabled_ = true;
+	std::wstring captureRecoverySource_;
+	bool captureRecoveryAuto_ = false;
+	int captureRecoveryBlackSeconds_ = 5;
+	std::wstring captureRecoveryResetCommand_;
 	std::map<std::wstring, UserOverride> userOverrides_;
 	std::map<std::wstring, std::wstring> userOverrideDisplayNames_; // Cosmetic only - see userOverrideDisplayName().
 	RecentCategories recentCategories_;

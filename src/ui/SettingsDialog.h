@@ -59,6 +59,7 @@
 
 QT_BEGIN_NAMESPACE
 class QCheckBox;
+class QComboBox;
 class QLineEdit;
 class QListWidget;
 class QSpinBox;
@@ -97,6 +98,8 @@ private slots:
 	void onSaveClicked();
 	void onRemoveOverrideClicked();
 	void onConnectTwitchClicked();
+	void onBrowseResetCommandClicked();
+	void onRestartCaptureClicked();
 
 private:
 	void buildUi();
@@ -122,6 +125,13 @@ private:
 	QSpinBox *liveCheckIntervalSpin_ = nullptr;
 	QCheckBox *goLiveQuickChecksCheckbox_ = nullptr;
 	QSpinBox *noGameSnoozeSpin_ = nullptr;
+
+	// Capture card recovery section.
+	QComboBox *captureSourceCombo_ = nullptr;
+	QLabel *captureSourceNote_ = nullptr;
+	QCheckBox *captureAutoCheckbox_ = nullptr;
+	QSpinBox *captureBlackSecondsSpin_ = nullptr;
+	QLineEdit *captureResetCommandEdit_ = nullptr;
 
 	QListWidget *overridesList_ = nullptr; // View-and-remove only - see class doc comment.
 	std::vector<std::wstring> pendingOverrideRemovals_; // Keys staged for removal; applied in onSaveClicked().

@@ -40,6 +40,7 @@
 #include "signalbox-build-id.h"
 #include "../twitch/TwitchClientId.h"
 #include "../ui/CategoryDock.h"
+#include "CaptureRecovery.h"
 #include "CategoryResolver.h"
 #include "DetectionEngine.h"
 #include "PluginConfig.h"
@@ -53,6 +54,7 @@ signalbox::ui::CategoryDock *g_dock = nullptr;
 signalbox::core::DetectionEngine *g_engine = nullptr;
 signalbox::core::PluginConfig *g_config = nullptr;
 signalbox::core::CategoryResolver *g_resolver = nullptr;
+signalbox::core::CaptureRecovery *g_captureRecovery = nullptr;
 
 // bmalloc'd UTF-8 path -> std::wstring, freeing the bmalloc'd
 // intermediate. Same conversion pattern already used by TokenStore.cpp/
@@ -271,6 +273,10 @@ bool obs_module_load(void)
 			g_engine->requestRescan();
 		}
 	});
+
+	// Capture card recovery: lives for the whole session (owned by the dock,
+	// which OBS destroys with the main window).
+	g_captureRecovery = new signalbox::core::CaptureRecovery(*g_config, g_dock);
 
 	obs_frontend_add_event_callback(&LiveStateTrampoline, nullptr);
 

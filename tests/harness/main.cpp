@@ -28,6 +28,7 @@
 #include "core/CategorySwitchCoordinator.h"
 #include "core/DetectionStateMachine.h"
 #include "core/RecentCategories.h"
+#include "core/CaptureRecoveryPolicy.h"
 #include "core/TimingConstants.h"
 #include "detection/DetectedGame.h"
 #include "detection/IGameProvider.h"
@@ -2801,6 +2802,46 @@ void RunRecentCategoryScenarios()
 	}
 }
 
+void RunCaptureRecoveryScenarios()
+{
+	std::printf("\n--- Capture card recovery policy ---\n");
+	using signalbox::core::CaptureRecoveryPolicy;
+	using Action = CaptureRecoveryPolicy::Action;
+
+	{
+		CaptureRecoveryPolicy p(5000);
+		Check(p.tick(0, true, true) == Action::None, "a source with frames is left alone");
+		Check(p.tick(1000, true, false) == Action::None, "the first black reading starts the clock");
+		Check(p.tick(5999, true, false) == Action::None, "not restarted before the threshold");
+		Check(p.tick(6000, true, false) == Action::Restart, "restarted once black for the threshold");
+		Check(p.tick(7000, true, false) == Action::None, "a restart is given time before being judged again");
+		Check(p.tick(11000, true, false) == Action::Restart, "second attempt after another threshold");
+		Check(p.tick(16000, true, false) == Action::Restart, "third attempt after another threshold");
+		Check(p.tick(21000, true, false) == Action::None, "backs off after three attempts");
+		Check(p.tick(75999, true, false) == Action::None, "still backing off just under a minute later");
+		Check(p.tick(76000, true, false) == Action::Restart, "tries again once the minute is up");
+	}
+	{
+		CaptureRecoveryPolicy p(5000);
+		p.tick(0, true, false);
+		Check(p.tick(5000, true, false) == Action::Restart, "first restart");
+		Check(p.tick(6000, true, true) == Action::None, "picture returns");
+		p.tick(7000, true, false);
+		Check(p.tick(11999, true, false) == Action::None, "counters restart after frames return");
+		Check(p.tick(12000, true, false) == Action::Restart, "a new black spell gets a fresh threshold");
+	}
+	{
+		CaptureRecoveryPolicy p(5000);
+		p.tick(0, false, false);
+		Check(p.tick(60000, false, false) == Action::None, "a hidden or switched-off source is never restarted");
+		p.tick(61000, true, false);
+		Check(p.tick(62000, false, false) == Action::None, "hiding the source ends the black spell");
+		Check(p.tick(64000, true, false) == Action::None, "and showing it starts the clock again");
+		Check(p.tick(68999, true, false) == Action::None, "no restart before a full threshold after re-show");
+		Check(p.tick(69000, true, false) == Action::Restart, "restarts after a full threshold after re-show");
+	}
+}
+
 int main()
 {
 	std::printf("SignalBox - standalone harness (no OBS, no live Twitch)\n");
@@ -2818,6 +2859,7 @@ int main()
 	RunPlayingElsewhereScenarios();
 	RunCoordinatorScenarios();
 	RunRecentCategoryScenarios();
+	RunCaptureRecoveryScenarios();
 	RunInstallIndexScenario();
 	RunTokenValidationTimingScenario();
 	RunShippedDataFileScenarios();

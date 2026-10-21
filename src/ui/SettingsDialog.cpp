@@ -10,8 +10,11 @@
 #include "SettingsDialog.h"
 
 #include <QCheckBox>
+#include <QComboBox>
+#include <QFileDialog>
 #include <QClipboard>
 #include <QDialogButtonBox>
+#include <QDir>
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QGuiApplication>
@@ -24,6 +27,7 @@
 #include <QSpinBox>
 #include <QVBoxLayout>
 
+#include "../core/CaptureRecovery.h"
 #include "../twitch/TwitchAuth.h"
 
 namespace signalbox::ui {
@@ -170,6 +174,78 @@ void SettingsDialog::buildUi()
 
 	root->addWidget(timingGroup);
 
+	// --- Capture card recovery ---
+	auto *captureGroup = new QGroupBox(QStringLiteral("Capture card recovery"), this);
+	auto *captureLayout = new QVBoxLayout(captureGroup);
+	auto *captureForm = new QFormLayout();
+
+	// Lists the scene collection's Video Capture Device sources. A saved
+	// source that is no longer there (renamed, or another scene collection
+	// is loaded) is kept in the list so the choice is not silently lost.
+	captureSourceCombo_ = new QComboBox(captureGroup);
+	captureSourceCombo_->addItem(QStringLiteral("(none)"), QString());
+	const QString savedSource = QString::fromStdWString(config_.captureRecoverySource());
+	const QStringList sources = core::CaptureRecovery::captureSourceNames();
+	for (const QString &name : sources)
+		captureSourceCombo_->addItem(name, name);
+	captureSourceNote_ = new QLabel(captureGroup);
+	captureSourceNote_->setWordWrap(true);
+	if (!savedSource.isEmpty()) {
+		int index = captureSourceCombo_->findData(savedSource);
+		if (index < 0) {
+			captureSourceCombo_->addItem(QStringLiteral("%1 (not found)").arg(savedSource), savedSource);
+			index = captureSourceCombo_->count() - 1;
+			captureSourceNote_->setText(QStringLiteral(
+				"\"%1\" isn't in this scene collection right now. Nothing will be restarted until it is back "
+				"or you pick another source.").arg(savedSource));
+		}
+		captureSourceCombo_->setCurrentIndex(index);
+	} else if (sources.isEmpty()) {
+		captureSourceNote_->setText(QStringLiteral("No Video Capture Device sources found in this scene collection."));
+	}
+	captureForm->addRow(QStringLiteral("Capture source:"), captureSourceCombo_);
+	captureLayout->addLayout(captureForm);
+	captureLayout->addWidget(captureSourceNote_);
+
+	captureAutoCheckbox_ =
+		new QCheckBox(QStringLiteral("Auto-recover when the picture goes black"), captureGroup);
+	captureAutoCheckbox_->setChecked(config_.captureRecoveryAuto());
+	captureAutoCheckbox_->setToolTip(
+		QStringLiteral("While the source is showing but sending no picture, SignalBox switches it off and on "
+				"again, the same as Deactivate/Activate in its Properties. It tries up to 3 times, then "
+				"waits a minute before trying again."));
+	captureLayout->addWidget(captureAutoCheckbox_);
+
+	auto *blackRow = new QFormLayout();
+	captureBlackSecondsSpin_ = new QSpinBox(captureGroup);
+	captureBlackSecondsSpin_->setRange(2, 60);
+	captureBlackSecondsSpin_->setValue(config_.captureRecoveryBlackSeconds());
+	captureBlackSecondsSpin_->setSuffix(QStringLiteral(" s"));
+	blackRow->addRow(QStringLiteral("Restart after no picture for:"), captureBlackSecondsSpin_);
+	captureLayout->addLayout(blackRow);
+
+	captureLayout->addWidget(new QLabel(
+		QStringLiteral("Optional: a program or shortcut that resets your capture card (e.g. a script that "
+				"restarts its USB device). It runs just before the source is restarted."),
+		captureGroup));
+	auto *resetRow = new QHBoxLayout();
+	captureResetCommandEdit_ =
+		new QLineEdit(QString::fromStdWString(config_.captureRecoveryResetCommand()), captureGroup);
+	captureResetCommandEdit_->setPlaceholderText(QStringLiteral("Hardware reset command (optional)"));
+	resetRow->addWidget(captureResetCommandEdit_);
+	auto *browseButton = new QPushButton(QStringLiteral("Browse..."), captureGroup);
+	connect(browseButton, &QPushButton::clicked, this, &SettingsDialog::onBrowseResetCommandClicked);
+	resetRow->addWidget(browseButton);
+	captureLayout->addLayout(resetRow);
+
+	auto *restartButton = new QPushButton(QStringLiteral("Restart capture card now"), captureGroup);
+	restartButton->setToolTip(QStringLiteral("Also available as the OBS hotkey \"SignalBox: Restart capture card\" "
+						  "(Settings > Hotkeys)."));
+	connect(restartButton, &QPushButton::clicked, this, &SettingsDialog::onRestartCaptureClicked);
+	captureLayout->addWidget(restartButton);
+
+	root->addWidget(captureGroup);
+
 	// --- Per-game overrides (view-and-remove only - see class doc comment) ---
 	auto *overridesGroup = new QGroupBox(QStringLiteral("Per-game overrides"), this);
 	auto *overridesLayout = new QVBoxLayout(overridesGroup);
@@ -252,6 +328,11 @@ void SettingsDialog::onSaveClicked()
 		config_.removeUserOverride(key);
 	pendingOverrideRemovals_.clear();
 
+	config_.setCaptureRecoverySource(captureSourceCombo_->currentData().toString().toStdWString());
+	config_.setCaptureRecoveryAuto(captureAutoCheckbox_->isChecked());
+	config_.setCaptureRecoveryBlackSeconds(captureBlackSecondsSpin_->value());
+	config_.setCaptureRecoveryResetCommand(captureResetCommandEdit_->text().trimmed().toStdWString());
+
 	core::TimingConstants timing = config_.timing();
 	timing.confirmPolls = static_cast<std::uint32_t>(confirmPollsSpin_->value());
 	timing.crashGraceS = static_cast<std::uint32_t>(crashGraceSpin_->value());
@@ -293,6 +374,23 @@ void SettingsDialog::onRemoveOverrideClicked()
 		pendingOverrideRemovals_.push_back(item->data(Qt::UserRole).toString().toStdWString());
 		delete overridesList_->takeItem(overridesList_->row(item));
 	}
+}
+
+void SettingsDialog::onBrowseResetCommandClicked()
+{
+	const QString path = QFileDialog::getOpenFileName(
+		this, QStringLiteral("Choose a program or shortcut"), captureResetCommandEdit_->text(),
+		QStringLiteral("Programs and shortcuts (*.lnk *.exe *.bat *.cmd *.ps1);;All files (*)"));
+	if (!path.isEmpty())
+		captureResetCommandEdit_->setText(QDir::toNativeSeparators(path));
+}
+
+void SettingsDialog::onRestartCaptureClicked()
+{
+	// Uses what is on screen, saved or not, so it can be tried before Save.
+	if (auto *recovery = core::CaptureRecovery::instance())
+		recovery->restartSource(captureSourceCombo_->currentData().toString(),
+					captureResetCommandEdit_->text().trimmed());
 }
 
 void SettingsDialog::onConnectTwitchClicked()

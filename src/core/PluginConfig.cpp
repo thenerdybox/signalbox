@@ -179,6 +179,17 @@ void PluginConfig::load()
 	obs_data_set_default_bool(data, "idlePromptEnabled", true);
 	idlePromptEnabled_ = obs_data_get_bool(data, "idlePromptEnabled");
 
+	// Capture card recovery: off unless the streamer turns it on.
+	obs_data_set_default_string(data, "captureRecoverySource", "");
+	captureRecoverySource_ = Utf8ToWide(obs_data_get_string(data, "captureRecoverySource"));
+	obs_data_set_default_bool(data, "captureRecoveryAuto", false);
+	captureRecoveryAuto_ = obs_data_get_bool(data, "captureRecoveryAuto");
+	obs_data_set_default_int(data, "captureRecoveryBlackSeconds", 5);
+	captureRecoveryBlackSeconds_ =
+		std::clamp(static_cast<int>(obs_data_get_int(data, "captureRecoveryBlackSeconds")), 2, 60);
+	obs_data_set_default_string(data, "captureRecoveryResetCommand", "");
+	captureRecoveryResetCommand_ = Utf8ToWide(obs_data_get_string(data, "captureRecoveryResetCommand"));
+
 	// --- Per-game user overrides (CategoryResolver tier 1). ---
 	userOverrides_.clear();
 	userOverrideDisplayNames_.clear();
@@ -275,6 +286,10 @@ void PluginConfig::save()
 	obs_data_set_bool(data, "promptsEnabled", promptsEnabled_);
 	obs_data_set_bool(data, "fallbackSwitchingEnabled", fallbackSwitchingEnabled_);
 	obs_data_set_bool(data, "idlePromptEnabled", idlePromptEnabled_);
+	obs_data_set_string(data, "captureRecoverySource", WideToUtf8(captureRecoverySource_).c_str());
+	obs_data_set_bool(data, "captureRecoveryAuto", captureRecoveryAuto_);
+	obs_data_set_int(data, "captureRecoveryBlackSeconds", captureRecoveryBlackSeconds_);
+	obs_data_set_string(data, "captureRecoveryResetCommand", WideToUtf8(captureRecoveryResetCommand_).c_str());
 
 	obs_data_array_t *overridesArray = obs_data_array_create();
 	for (const auto &[key, override] : userOverrides_) {
@@ -376,6 +391,46 @@ bool PluginConfig::idlePromptEnabled() const
 void PluginConfig::setIdlePromptEnabled(bool enabled)
 {
 	idlePromptEnabled_ = enabled;
+}
+
+std::wstring PluginConfig::captureRecoverySource() const
+{
+	return captureRecoverySource_;
+}
+
+void PluginConfig::setCaptureRecoverySource(std::wstring name)
+{
+	captureRecoverySource_ = std::move(name);
+}
+
+bool PluginConfig::captureRecoveryAuto() const
+{
+	return captureRecoveryAuto_;
+}
+
+void PluginConfig::setCaptureRecoveryAuto(bool enabled)
+{
+	captureRecoveryAuto_ = enabled;
+}
+
+int PluginConfig::captureRecoveryBlackSeconds() const
+{
+	return captureRecoveryBlackSeconds_;
+}
+
+void PluginConfig::setCaptureRecoveryBlackSeconds(int seconds)
+{
+	captureRecoveryBlackSeconds_ = std::clamp(seconds, 2, 60);
+}
+
+std::wstring PluginConfig::captureRecoveryResetCommand() const
+{
+	return captureRecoveryResetCommand_;
+}
+
+void PluginConfig::setCaptureRecoveryResetCommand(std::wstring path)
+{
+	captureRecoveryResetCommand_ = std::move(path);
 }
 
 const std::vector<std::wstring> &PluginConfig::recentCategories() const
