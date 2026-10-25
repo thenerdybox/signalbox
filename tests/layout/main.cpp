@@ -92,7 +92,7 @@ struct FakeDock {
 		content = new QWidget(scroll);
 		auto *root = new QVBoxLayout(content);
 		scroll->setWidget(content);
-		outer->addWidget(scroll);
+		outer->addWidget(scroll, 1); // Stretch 1: takes all spare height.
 
 		// Prompt-like stacked answers.
 		auto *prompt = new QWidget(content);
@@ -150,7 +150,12 @@ struct FakeDock {
 			footerButtons.push_back(b);
 			footer->addWidget(b);
 		}
-		outer->addWidget(footerBar);
+		{
+			QSizePolicy fp(QSizePolicy::Preferred, QSizePolicy::Maximum); // As the dock does.
+			fp.setHeightForWidth(true);
+			footerBar->setSizePolicy(fp);
+		}
+		outer->addWidget(footerBar, 0);
 		ShrinkLabelsToDock(content);
 		ShrinkLabelsToDock(footerBar);
 	}
@@ -223,6 +228,21 @@ void CheckDockAt(int width, int height)
 		Check(r.left() >= 0 && r.right() < d.content->width(), name + " is horizontally inside the content");
 		Check(r.top() >= 0 && r.bottom() < d.content->height(), name + " is inside the scrollable content");
 		Check(b->height() >= b->heightForWidth(b->width()), name + " is tall enough for its whole caption");
+	}
+
+	// The scroll area takes ALL spare height; the footer is only as tall as its wrapped rows
+	// and sits flush at the bottom. No empty block, whatever the dock height.
+	{
+		const int dockH = d.dock.height();
+		const QRect fr(d.footerBar->mapTo(&d.dock, QPoint(0, 0)), d.footerBar->size());
+		const int need = d.footerBar->layout()->totalHeightForWidth(width);
+		Check(d.footerBar->height() <= need + 4, "footer is only as tall as its rows, not stretched" + at);
+		Check(dockH - fr.bottom() - 1 <= 16, "no empty gap under the footer" + at);
+		Check(d.scroll->height() >= dockH - d.footerBar->height() - 16,
+		      "scroll area gets all the spare height" + at);
+		const int fb = d.footerButtons.front()->height();
+		if (height >= 700)
+			Check(d.footerBar->height() <= 2 * fb + 70, "footer is a couple of rows tall at a tall dock" + at);
 	}
 
 	// Footer buttons are pinned OUTSIDE the scroll area and visible at every size, scrolled or not.
@@ -320,7 +340,7 @@ int main(int argc, char **argv)
 	std::printf("SignalBox - dock layout check (platform: %s)\n", app.platformName().toUtf8().constData());
 
 	for (int width : {220, 260, 340, 500, 900})
-		for (int height : {120, 260, 520, 900})
+		for (int height : {120, 260, 520, 700, 900, 1000, 1400})
 			CheckDockAt(width, height);
 	CheckActivityLogAlone();
 

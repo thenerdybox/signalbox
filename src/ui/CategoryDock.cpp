@@ -246,7 +246,7 @@ void CategoryDock::buildUi()
 	auto *content = new QWidget(scrollArea_);
 	auto *root = new QVBoxLayout(content);
 	scrollArea_->setWidget(content);
-	outer->addWidget(scrollArea_);
+	outer->addWidget(scrollArea_, /*stretch=*/1); // Takes every spare pixel of height.
 
 	// --- Prompt (embedded, non-modal - see PromptWidget.h) ---
 	// First, above Status: the one thing in this dock that is asking the
@@ -552,7 +552,13 @@ void CategoryDock::buildUi()
 	settingsButton_ = new ResponsiveButton(QStringLiteral("Settings..."), footerBar);
 	connect(settingsButton_, &QPushButton::clicked, this, &CategoryDock::onSettingsClicked);
 	footer->addWidget(settingsButton_);
-	outer->addWidget(footerBar); // Outside the scroll area.
+	{
+		// Exactly as tall as its (wrapped) rows, never stretched.
+		QSizePolicy footerPolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
+		footerPolicy.setHeightForWidth(true);
+		footerBar->setSizePolicy(footerPolicy);
+	}
+	outer->addWidget(footerBar, /*stretch=*/0); // Outside the scroll area, flush at the bottom.
 
 	// Nothing is connected yet at construction, so this opens on the
 	// Twitch section with Status hidden. setTwitchClientId()'s warm start
