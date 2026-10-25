@@ -30,6 +30,7 @@
 #include "core/RecentCategories.h"
 #include "core/CaptureRecoveryPolicy.h"
 #include "core/ConsoleMode.h"
+#include "core/DetectionFilter.h"
 #include "core/TimingConstants.h"
 #include "detection/DetectedGame.h"
 #include "detection/IGameProvider.h"
@@ -3015,6 +3016,101 @@ void RunConsoleModeScenarios()
 	}
 }
 
+// ---------------------------------------------------------------------
+// SECTION 4b: hardware/driver utilities are never games, and an app set to
+// "never switch" is not shown as the detected game.
+//
+// Real case: Dell Display and Peripheral Manager kept showing as the
+// dock's detected game. It is a monitor utility; the activity log even said
+// it was being ignored while the dock went on listing it.
+// ---------------------------------------------------------------------
+void RunUtilityExclusionScenarios()
+{
+	std::printf("\n=== SECTION 4b: utilities are not games; never-switch apps are not detected ===\n");
+	const std::wstring root = Widen(SIGNALBOX_SOURCE_DIR);
+	const signalbox::detection::HelperDenylist shipped =
+		signalbox::detection::HelperDenylist::LoadFromFile(root + L"/data/helpers.json");
+	const signalbox::detection::HelperDenylist fallback = signalbox::detection::HelperDenylist::BuiltInFallback();
+
+	struct Utility {
+		const wchar_t *displayName;
+		const wchar_t *exe;
+	};
+	const Utility utilities[] = {
+		{L"Dell Display and Peripheral Manager 2.1.1.14", L"DDPM.exe"},
+		{L"Dell Display Manager 2.3", L"DDM.exe"},
+		{L"NZXT CAM", L"NZXT CAM.exe"},
+		{L"Corsair iCUE 5 Software", L"iCUE.exe"},
+		{L"Razer Synapse 3", L"RazerAppEngine.exe"},
+		{L"Logitech G HUB", L"lghub_agent.exe"},
+		{L"ASUS Armoury Crate", L"ArmouryCrate.UserSessionHelper.exe"},
+		{L"MSI Afterburner 4.6.5", L"MSIAfterburner.exe"},
+		{L"RivaTuner Statistics Server", L"RTSS.exe"},
+		{L"SteelSeries GG", L"SteelSeriesGGClient.exe"},
+		{L"Elgato Camera Hub", L"CameraHub.exe"},
+		{L"Elgato Stream Deck", L"StreamDeck.exe"},
+		{L"Wallpaper Engine", L"wallpaper64.exe"},
+		{L"Discord", L"Discord.exe"},
+		{L"OBS Studio", L"obs64.exe"},
+	};
+	for (const Utility &u : utilities) {
+		const InstalledGame game = MakeGame(u.displayName, Platform::Generic, L"x");
+		const std::string label = Narrow(u.displayName);
+		Check(shipped.indexExclusions.excludes(game), (label + ": excluded from the install index (shipped data)").c_str());
+		Check(fallback.indexExclusions.excludes(game), (label + ": excluded in the built-in fallback too").c_str());
+		Check(shipped.shouldIgnoreProcess(L"", u.exe), (label + ": process rejected by name (shipped data)").c_str());
+		Check(fallback.shouldIgnoreProcess(L"", u.exe), (label + ": process rejected by name (fallback)").c_str());
+	}
+	// Exclusions must not eat real games.
+	for (const wchar_t *name : {L"Marvel Rivals", L"Dead by Daylight", L"Elden Ring", L"Cyberpunk 2077"}) {
+		Check(!shipped.indexExclusions.excludes(MakeGame(name, Platform::Steam, L"1")),
+		      (std::string("a real game is still detectable: ") + Narrow(name)).c_str());
+	}
+	Check(!shipped.shouldIgnoreProcess(L"", L"MarvelRivals-Win64-Shipping.exe"), "a game process is not rejected");
+	// Launchers (the cherry-picked store-launcher commit) go through the same lists.
+	Check(shipped.indexExclusions.excludes(MakeGame(L"GOG Galaxy", Platform::Generic, L"x")), "GOG Galaxy is excluded");
+
+	// --- "never switch for it" ---
+	FakeOverrideStore overrides;
+	const InstalledGame ddpm = MakeGame(L"Dell Display and Peripheral Manager", Platform::Generic, L"DDPM");
+	const InstalledGame realGame = MakeGame(L"Marvel Rivals", Platform::Steam, L"2767030");
+	const DetectedGame detectedDdpm = MakeDetected(ddpm, 4242);
+	const DetectedGame detectedGame = MakeDetected(realGame, 100);
+
+	Check(signalbox::core::WithoutNeverSwitchApps(detectedDdpm, overrides).has_value(),
+	      "with no override, a detection is passed through untouched");
+
+	UserOverride never;
+	never.ignored = true;
+	overrides.set(CategoryResolver::overrideKeyFor(ddpm), never);
+	Check(signalbox::core::IsNeverSwitchApp(overrides, ddpm), "an app set to never-switch is recognised");
+	Check(!signalbox::core::WithoutNeverSwitchApps(detectedDdpm, overrides).has_value(),
+	      "a never-switch app is not the detected game");
+	Check(signalbox::core::WithoutNeverSwitchApps(detectedGame, overrides).has_value(),
+	      "another app is unaffected");
+	Check(!signalbox::core::WithoutNeverSwitchApps(std::nullopt, overrides).has_value(), "nothing stays nothing");
+
+	UserOverride mapped;
+	mapped.categoryId = L"123";
+	mapped.categoryName = L"Just Chatting";
+	overrides.set(CategoryResolver::overrideKeyFor(ddpm), mapped);
+	Check(signalbox::core::WithoutNeverSwitchApps(detectedDdpm, overrides).has_value(),
+	      "an app with a category override (not never-switch) is still detected");
+
+	// Through the state machine: the dock's label comes from here.
+	overrides.set(CategoryResolver::overrideKeyFor(ddpm), never);
+	{
+		TimingConstants timing;
+		timing.confirmPolls = 1;
+		RecordingListener listener;
+		DetectionStateMachine sm(listener, timing);
+		sm.onPollResult(signalbox::core::WithoutNeverSwitchApps(detectedDdpm, overrides));
+		Check(!sm.activeGame() && !sm.pendingCandidate() && !sm.graceGame(),
+		      "fed through the filter, the state machine shows nothing detected");
+		Check(listener.switchInCount == 0, "and nothing switches");
+	}
+}
+
 int main()
 {
 	std::printf("SignalBox - standalone harness (no OBS, no live Twitch)\n");
@@ -3034,6 +3130,7 @@ int main()
 	RunRecentCategoryScenarios();
 	RunCaptureRecoveryScenarios();
 	RunConsoleModeScenarios();
+	RunUtilityExclusionScenarios();
 	RunInstallIndexScenario();
 	RunTokenValidationTimingScenario();
 	RunShippedDataFileScenarios();

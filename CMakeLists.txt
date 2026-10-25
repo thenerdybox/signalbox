@@ -127,6 +127,8 @@ target_sources(
     src/ui/ConsoleModeDialog.h
     src/ui/ConsoleModeDialog.cpp
     src/core/ConsoleMode.h
+    src/core/DetectionFilter.h
+    src/ui/DockLayout.h
 )
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})
@@ -155,6 +157,7 @@ if(ENABLE_QT)
     src/core/TimingConstants.h
     src/core/CaptureRecoveryPolicy.h
     src/core/ConsoleMode.h
+    src/core/DetectionFilter.h
     src/detection/DetectedGame.h
     src/detection/ProcessScanner.h
     src/detection/IGameProvider.h
@@ -184,6 +187,20 @@ if(ENABLE_QT)
   target_include_directories(signalbox-harness PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
   target_link_libraries(signalbox-harness PRIVATE Qt6::Core)
   set_target_properties(signalbox-harness PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON AUTOMOC OFF)
+
+  # Dock layout check: builds the dock's widget structure (ui/DockLayout.h) on
+  # Qt's "minimal" platform - no OBS, no window - and resizes it from narrow to
+  # wide and short to tall, asserting no button is ever clipped or hidden.
+  add_executable(signalbox-layout-test tests/layout/main.cpp src/ui/DockLayout.h)
+  target_include_directories(signalbox-layout-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  target_link_libraries(signalbox-layout-test PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets)
+  set_target_properties(signalbox-layout-test PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON AUTOMOC OFF)
+  get_filename_component(SIGNALBOX_QT_PLUGINS_DIR "${Qt6_DIR}/../../../plugins" ABSOLUTE)
+  target_compile_definitions(signalbox-layout-test PRIVATE QT_PLUGINS_DIR="${SIGNALBOX_QT_PLUGINS_DIR}")
+  add_custom_command(
+    TARGET signalbox-layout-test POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Qt6::Core> $<TARGET_FILE:Qt6::Gui> $<TARGET_FILE:Qt6::Widgets> $<TARGET_FILE_DIR:signalbox-layout-test>
+    VERBATIM)
 endif()
 
 # The installer needs the same version the plugin reports. Rather than repeat it

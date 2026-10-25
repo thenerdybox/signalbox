@@ -35,6 +35,7 @@
 #include <QUrl>
 #include <QVBoxLayout>
 
+#include "../core/DetectionFilter.h"
 #include "../plugin-support.h"
 #include "signalbox-build-id.h"
 #include "../twitch/TwitchAuth.h"
@@ -42,6 +43,7 @@
 #include "../twitch/TwitchChannelClient.h"
 #include "../twitch/TwitchClient.h"
 #include "ConsoleModeDialog.h"
+#include "DockLayout.h"
 #include "GameOverrideDialog.h"
 #include "PromptToast.h"
 #include "PromptWidget.h"
@@ -235,7 +237,9 @@ void CategoryDock::buildUi()
 	scrollArea_ = new QScrollArea(this);
 	scrollArea_->setWidgetResizable(true);
 	scrollArea_->setFrameShape(QFrame::NoFrame);
-	scrollArea_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+	// Buttons wrap to the dock's width (DockLayout.h), so this should never show.
+	// It is the safety net: anything that still cannot fit is scrolled to, never hidden.
+	scrollArea_->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
 	auto *content = new QWidget(scrollArea_);
 	auto *root = new QVBoxLayout(content);
 	scrollArea_->setWidget(content);
@@ -260,7 +264,7 @@ void CategoryDock::buildUi()
 	// disabled; refreshStatusLabels() enables it exactly when
 	// currentGameForFix() has something to act on, same as every other
 	// piece of state in this group.
-	fixDetectionButton_ = new QPushButton(QStringLiteral("Fix This!"), statusGroup);
+	fixDetectionButton_ = new ResponsiveButton(QStringLiteral("Fix This!"), statusGroup);
 	fixDetectionButton_->setEnabled(false);
 	fixDetectionButton_->setToolTip(
 		QStringLiteral("Correct a wrong detection: set the Twitch category SignalBox should always use "
@@ -287,14 +291,14 @@ void CategoryDock::buildUi()
 	// on its own schedule (two minutes of nothing), and a streamer who
 	// already knows they are done gaming should not have to wait to be
 	// asked - a prompt is a convenience, not the only door.
-	streamEndingButton_ = new QPushButton(QStringLiteral("Stream Ending/Stop Detection"), statusGroup);
+	streamEndingButton_ = new ResponsiveButton(QStringLiteral("Stream Ending/Stop Detection"), statusGroup);
 	streamEndingButton_->setCheckable(true);
 	streamEndingButton_->setToolTip(
 		QStringLiteral("Stop changing my category while I wrap up. Clears itself when the stream stops "
 				"or a new game starts - you don't have to remember to turn it back on."));
 	connect(streamEndingButton_, &QPushButton::toggled, this, &CategoryDock::onStreamEndingToggled);
 
-	justChattingButton_ = new QPushButton(QStringLiteral("Just Chatting"), statusGroup);
+	justChattingButton_ = new ResponsiveButton(QStringLiteral("Just Chatting"), statusGroup);
 	justChattingButton_->setToolTip(
 		QStringLiteral("Set your Twitch category to your fallback category (Settings > Fallback category) "
 				"right now. Automatic switching carries on as normal afterwards."));
@@ -368,7 +372,7 @@ void CategoryDock::buildUi()
 	statusLayout->addWidget(playingElsewhereBanner_);
 	// Full width and directly under the banner, so it reads as the
 	// counterpart of the prompt's "Playing on another device" answer.
-	resumeAskingButton_ = new QPushButton(QStringLiteral("Switching to a PC game"), statusGroup);
+	resumeAskingButton_ = new ResponsiveButton(QStringLiteral("Switching to a PC game"), statusGroup);
 	resumeAskingButton_->setVisible(false);
 	resumeAskingButton_->setToolTip(QStringLiteral("Back on this PC: SignalBox starts detecting and switching again "
 						       "right away, without restarting the stream."));
@@ -392,12 +396,15 @@ void CategoryDock::buildUi()
 							   "border: 1px solid #37718c; border-radius: 3px; padding: 6px; }"));
 	statusLayout->addWidget(streamEndingBanner_);
 
+	detectedGameLabel_->setWordWrap(true);
 	liveCategoryLabel_ = new QLabel(QStringLiteral("Live category: (unknown)"), statusGroup);
 	connectionStateLabel_ = new QLabel(QStringLiteral("Twitch: not connected"), statusGroup);
 	countdownLabel_ = new QLabel(QString(), statusGroup);
 	countdownLabel_->setVisible(false);
-	for (auto *label : {liveCategoryLabel_, connectionStateLabel_, countdownLabel_})
+	for (auto *label : {liveCategoryLabel_, connectionStateLabel_, countdownLabel_}) {
+		label->setWordWrap(true); // A long category name must not widen the dock.
 		statusLayout->addWidget(label);
+	}
 
 	// --- Paused banner ---
 	// Hidden unless automation is actually paused, and deliberately loud
@@ -415,14 +422,14 @@ void CategoryDock::buildUi()
 						     "border: 1px solid #a8702a; border-radius: 3px; padding: 6px; }"));
 	statusLayout->addWidget(pausedBanner_);
 
-	resumeButton_ = new QPushButton(QStringLiteral("Resume automatic switching"), statusGroup);
+	resumeButton_ = new ResponsiveButton(QStringLiteral("Resume automatic switching"), statusGroup);
 	resumeButton_->setVisible(false);
 	resumeButton_->setToolTip(
 		QStringLiteral("Start detecting again from scratch, as if the plugin had just loaded."));
 	connect(resumeButton_, &QPushButton::clicked, this, &CategoryDock::onResumeClicked);
 	statusLayout->addWidget(resumeButton_);
 
-	manualLockButton_ = new QPushButton(QStringLiteral("Automatic switching: ON"), statusGroup);
+	manualLockButton_ = new ResponsiveButton(QStringLiteral("Automatic switching: ON"), statusGroup);
 	manualLockButton_->setCheckable(true);
 	manualLockButton_->setChecked(false); // Unchecked = automatic switching enabled (not locked).
 	connect(manualLockButton_, &QPushButton::toggled, this, &CategoryDock::onManualLockToggled);
@@ -430,7 +437,7 @@ void CategoryDock::buildUi()
 
 	// Console mode: the game is on a console, not this PC. Pauses detection
 	// and lets the streamer type the category. Also an OBS hotkey.
-	consoleModeButton_ = new QPushButton(QStringLiteral("Console mode"), statusGroup);
+	consoleModeButton_ = new ResponsiveButton(QStringLiteral("Console mode"), statusGroup);
 	consoleModeButton_->setCheckable(true);
 	consoleModeButton_->setToolTip(
 		QStringLiteral("Playing on a console? Turn this on to stop SignalBox looking for games on this PC "
@@ -444,7 +451,7 @@ void CategoryDock::buildUi()
 	consoleBanner_->setStyleSheet(QStringLiteral("QLabel { background: #1e3a4a; color: #bfe4f5; "
 						      "border: 1px solid #37718c; border-radius: 3px; padding: 6px; }"));
 	statusLayout->addWidget(consoleBanner_);
-	consoleSetButton_ = new QPushButton(QStringLiteral("Set category..."), statusGroup);
+	consoleSetButton_ = new ResponsiveButton(QStringLiteral("Set category..."), statusGroup);
 	consoleSetButton_->setVisible(false);
 	connect(consoleSetButton_, &QPushButton::clicked, this, [this]() {
 		if (consoleDialog_)
@@ -462,7 +469,6 @@ void CategoryDock::buildUi()
 	twitchStatusLabel_->setWordWrap(true);
 	twitchLayout->addWidget(twitchStatusLabel_);
 
-	auto *deviceRow = new QHBoxLayout();
 	deviceCodeLabel_ = new QLabel(twitchGroup);
 	deviceCodeLabel_->setVisible(false);
 	// Shown as a live link rather than an address to retype. Twitch embeds the
@@ -472,19 +478,20 @@ void CategoryDock::buildUi()
 	deviceCodeLabel_->setOpenExternalLinks(true);
 	deviceCodeLabel_->setTextInteractionFlags(Qt::TextBrowserInteraction);
 	deviceCodeLabel_->setWordWrap(true);
-	openAuthPageButton_ = new QPushButton(QStringLiteral("Open page"), twitchGroup);
+	openAuthPageButton_ = new ResponsiveButton(QStringLiteral("Open page"), twitchGroup);
 	openAuthPageButton_->setVisible(false);
 	openAuthPageButton_->setToolTip(QStringLiteral("Open the Twitch authorization page in your browser again."));
 	connect(openAuthPageButton_, &QPushButton::clicked, this, &CategoryDock::onOpenAuthPageClicked);
-	copyDeviceCodeButton_ = new QPushButton(QStringLiteral("Copy code"), twitchGroup);
+	copyDeviceCodeButton_ = new ResponsiveButton(QStringLiteral("Copy code"), twitchGroup);
 	copyDeviceCodeButton_->setVisible(false);
 	connect(copyDeviceCodeButton_, &QPushButton::clicked, this, &CategoryDock::onCopyDeviceCodeClicked);
-	deviceRow->addWidget(deviceCodeLabel_, /*stretch=*/1);
-	deviceRow->addWidget(openAuthPageButton_);
-	deviceRow->addWidget(copyDeviceCodeButton_);
-	twitchLayout->addLayout(deviceRow);
+	twitchLayout->addWidget(deviceCodeLabel_);
+	auto *deviceButtons = new FlowLayout();
+	deviceButtons->addWidget(openAuthPageButton_);
+	deviceButtons->addWidget(copyDeviceCodeButton_);
+	twitchLayout->addLayout(deviceButtons);
 
-	connectTwitchButton_ = new QPushButton(QStringLiteral("Connect to Twitch"), twitchGroup);
+	connectTwitchButton_ = new ResponsiveButton(QStringLiteral("Connect to Twitch"), twitchGroup);
 	connectTwitchButton_->setEnabled(false); // Enabled once setTwitchClientId() is called.
 	connectTwitchButton_->setToolTip(QStringLiteral("Twitch client ID not configured yet."));
 	connect(connectTwitchButton_, &QPushButton::clicked, this, &CategoryDock::onConnectTwitchClicked);
@@ -497,18 +504,14 @@ void CategoryDock::buildUi()
 	auto *logLayout = new QVBoxLayout(logGroup);
 	activityLogView_ = new QListWidget(logGroup);
 	activityLogView_->setMinimumHeight(90); // In a scroll area the log would otherwise squash to nothing.
-	// Wrap long entries instead of cutting them off at the dock's edge: a
-	// narrow dock is the normal case, and a truncated line hides the part
-	// that says what happened.
-	activityLogView_->setWordWrap(true);
-	activityLogView_->setTextElideMode(Qt::ElideNone);
-	activityLogView_->setResizeMode(QListView::Adjust);
-	activityLogView_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+	// Long entries stay on one line and the list scrolls sideways (the vertical
+	// bar stays too). Wrapping them made a narrow dock a column of tall rows.
+	ConfigureActivityLog(activityLogView_);
 	logLayout->addWidget(activityLogView_);
 	root->addWidget(logGroup, /*stretch=*/1);
 
 	// --- Footer ---
-	auto *footer = new QHBoxLayout();
+	auto *footer = new FlowLayout(); // Wraps onto a second row in a narrow dock.
 	// Version links to the patch notes; the build id sits beside it as
 	// plain text (see CMakeLists.txt's BUILD IDENTITY block). Two compiles
 	// of the same version are otherwise indistinguishable in the UI, which
@@ -532,17 +535,16 @@ void CategoryDock::buildUi()
 					  .arg(QString::fromUtf8(SIGNALBOX_BUILD_ID)));
 	versionLabel_->setOpenExternalLinks(true); // User-clicked only - never auto-navigated.
 	footer->addWidget(versionLabel_);
-	footer->addStretch();
-	checkUpdatesButton_ = new QPushButton(QStringLiteral("Check for updates"), this);
+	checkUpdatesButton_ = new ResponsiveButton(QStringLiteral("Check for updates"), this);
 	connect(checkUpdatesButton_, &QPushButton::clicked, this, &CategoryDock::onCheckForUpdatesClicked);
 	footer->addWidget(checkUpdatesButton_);
-	rescanButton_ = new QPushButton(QStringLiteral("Rescan"), this);
+	rescanButton_ = new ResponsiveButton(QStringLiteral("Rescan"), this);
 	rescanButton_->setToolTip(
 		QStringLiteral("Immediately re-scan installed games (this normally happens automatically every "
 				"few minutes, or on the next detection)."));
 	connect(rescanButton_, &QPushButton::clicked, this, &CategoryDock::onRescanClicked);
 	footer->addWidget(rescanButton_);
-	settingsButton_ = new QPushButton(QStringLiteral("Settings..."), this);
+	settingsButton_ = new ResponsiveButton(QStringLiteral("Settings..."), this);
 	connect(settingsButton_, &QPushButton::clicked, this, &CategoryDock::onSettingsClicked);
 	footer->addWidget(settingsButton_);
 	root->addLayout(footer);
@@ -552,6 +554,7 @@ void CategoryDock::buildUi()
 	// calls it again a moment later if a saved token turns up, which is
 	// what makes the common case (already authorised) show Status without
 	// the Twitch box ever flashing into view.
+	ShrinkLabelsToDock(content);
 	refreshDockSections();
 	refreshRecentCategories();
 }
@@ -614,6 +617,22 @@ void CategoryDock::onDetectionResult(std::optional<detection::DetectedGame> dete
 {
 	if (consoleMode_.active())
 		return; // A result already in flight when Console mode turned on.
+
+	// An app set to "never switch for it" is not the detected game: the dock,
+	// the state machine and the prompts all see the real state (usually
+	// "nothing"). Before this the dock kept showing it as Detected while the
+	// activity log said it was being ignored.
+	if (detected && core::IsNeverSwitchApp(pluginConfig_, detected->game)) {
+		const std::wstring key = core::CategoryResolver::overrideKeyFor(detected->game);
+		if (key != lastIgnoredDetectionKey_) {
+			obs_log(LOG_INFO, "detected: %s - ignored, you asked SignalBox never to switch for it",
+				QString::fromStdWString(detected->game.displayName).toUtf8().constData());
+			lastIgnoredDetectionKey_ = key;
+		}
+		detected.reset();
+	} else {
+		lastIgnoredDetectionKey_.clear();
+	}
 
 	// One line per CHANGE in what is running, never one per poll. This is
 	// the observability that was missing entirely: detection ran every
@@ -1533,35 +1552,26 @@ void CategoryDock::refreshLogView()
 	// from refreshPresentationIfVisible() - i.e. on an actual log
 	// change while visible, or once when becoming visible again. Never
 	// from a timer.
+	// The rebuild would snap a sideways-scrolled list back to the left edge.
+	const int horizontalPos = activityLogView_->horizontalScrollBar()->value();
 	activityLogView_->clear();
 	for (std::size_t i = 0; i < logEntries_.size(); ++i) {
 		const LogEntry &entry = logEntries_[i];
-		auto *row = new QWidget(activityLogView_);
-		auto *rowLayout = new QHBoxLayout(row);
-		rowLayout->setContentsMargins(2, 2, 2, 2);
-
 		QString text = toQString(entry.message);
 		if (entry.undone)
 			text += QStringLiteral(" (undone)");
-		rowLayout->addWidget(new QLabel(text, row), /*stretch=*/1);
-
 		// One-click Undo (DESIGN.md 2.2 / Section 5) - only offered for
 		// entries that actually changed the category and haven't
 		// already been undone.
-		if (!entry.previousCategory.empty() && !entry.undone) {
-			auto *undoButton = new QPushButton(QStringLiteral("Undo"), row);
+		if (QPushButton *undoButton = AddLogRow(activityLogView_, text, !entry.previousCategory.empty() && !entry.undone))
 			connect(undoButton, &QPushButton::clicked, this, [this, i]() { onUndoRequested(i); });
-			rowLayout->addWidget(undoButton);
-		}
-		row->setLayout(rowLayout);
-
-		auto *item = new QListWidgetItem(activityLogView_);
-		item->setSizeHint(row->sizeHint());
-		activityLogView_->addItem(item);
-		activityLogView_->setItemWidget(item, row);
 	}
 	if (activityLogView_->count() > 0)
 		activityLogView_->scrollToBottom();
+	// Item layout is deferred, so the bar has no range yet; restore once it does.
+	QTimer::singleShot(0, activityLogView_, [view = activityLogView_, horizontalPos]() {
+		view->horizontalScrollBar()->setValue(horizontalPos);
+	});
 }
 
 void CategoryDock::updateCountdownTimerState()
@@ -1957,6 +1967,11 @@ void CategoryDock::onFixDetectionClicked()
 			appendActivityLogEntry(L"\"" + stillCurrent->displayName +
 						       L"\" will no longer change your category",
 						L"");
+			// Stop showing it as the detected game right now, not at the next poll.
+			stateMachine_.dropDetectionState();
+			syncPromptWidgetVisibility();
+			updateCountdownTimerState();
+			refreshPresentationIfVisible();
 			return;
 		}
 	}

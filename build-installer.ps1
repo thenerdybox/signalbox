@@ -39,6 +39,10 @@ Write-Host '--- running harness ---' -ForegroundColor Cyan
 & "$BuildDir\$Configuration\signalbox-harness.exe"
 if ($LASTEXITCODE -ne 0) { throw "Harness failed (exit $LASTEXITCODE). Not building an installer around a failing build." }
 
+Write-Host '--- running dock layout check ---' -ForegroundColor Cyan
+& "$BuildDir\$Configuration\signalbox-layout-test.exe"
+if ($LASTEXITCODE -ne 0) { throw "Layout check failed (exit $LASTEXITCODE). Not building an installer around a failing build." }
+
 $dll = "$BuildDir\rundir\$Configuration\signalbox.dll"
 if (-not (Test-Path $dll)) { throw "Expected plugin binary missing: $dll" }
 $dllHash = (Get-FileHash $dll -Algorithm SHA256).Hash

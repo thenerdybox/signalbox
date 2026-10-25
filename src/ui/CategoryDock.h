@@ -493,6 +493,7 @@ private:
 	QString pausedReason_; // Last onAutomationPaused() text, shown in the banner.
 	QString liveCategory_; // Last category the coordinator CONFIRMED is live.
 	std::optional<detection::DetectedGame> lastLoggedDetection_; // So the OBS log gets changes, not polls.
+	std::wstring lastIgnoredDetectionKey_; // So an ignored app is logged once, not per poll.
 	std::size_t lastIndexedCount_ = 0; // Compared against, so quiet rebuilds stay quiet.
 	bool haveIndexedCount_ = false;
 	QPushButton *manualLockButton_ = nullptr;

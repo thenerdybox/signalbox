@@ -21,6 +21,29 @@ patch-notes page are both generated from it.
   detection comes back. Your category is left alone until the next game is
   detected. Your recent games show up as quick picks when the box is empty.
 
+### Fixed
+
+- **Dock buttons no longer get cut off.** Buttons like "Stream Ending/Stop
+  Detection" and "Just Chatting" used to hide part of themselves, or get
+  covered, when the dock was narrow or had just opened. Now they wrap their text
+  to fit whatever size you make the dock, the buttons that shared a row stack
+  onto the next row when there is no room, and a short dock scrolls so nothing
+  is ever hidden.
+- **Activity log has a horizontal scroll bar.** Long lines stay on one line
+  instead of wrapping, and you can scroll sideways to read them. It still
+  scrolls down to the newest entry on its own.
+- **Monitor and hardware software is never treated as a game.** Dell Display
+  and Peripheral Manager kept showing up as the detected game. Dell, NZXT CAM,
+  Corsair iCUE, Razer Synapse, Logitech G HUB, ASUS Armoury Crate, MSI
+  Afterburner, SteelSeries GG, Elgato apps, Stream Deck, Wallpaper Engine,
+  Discord, OBS and similar are now skipped completely. The list is in
+  data/helpers.json if you want to add one.
+  Store launchers (GOG Galaxy, Steam, EA app, Ubisoft Connect, Battle.net and
+  others) are skipped the same way, so SignalBox stops asking about them.
+- **"Never switch for this app" now means it.** An app you told SignalBox to
+  leave alone is no longer shown as the detected game in the dock, so you see
+  what is really going on.
+
 ## [0.2.10] — 2026-10-21
 
 ### Added

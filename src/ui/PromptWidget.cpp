@@ -8,6 +8,7 @@
  */
 
 #include "PromptWidget.h"
+#include "DockLayout.h"
 
 #include <QBoxLayout>
 #include <QCheckBox>
@@ -38,12 +39,15 @@ PromptWidget::PromptWidget(QWidget *parent) : QWidget(parent)
 	messageLabel_->setWordWrap(true);
 	layout->addWidget(messageLabel_);
 
-	auto *buttonRow = new QBoxLayout(QBoxLayout::LeftToRight);
+	// Always stacked, one answer per row: side by side the answers were wider than a
+	// narrow dock and the right-hand ones were cut off. Each button wraps its own
+	// caption (ResponsiveButton), so none is ever clipped.
+	auto *buttonRow = new QBoxLayout(QBoxLayout::TopToBottom);
 	buttonRow_ = buttonRow;
-	primaryButton_ = new QPushButton(this);
-	secondaryButton_ = new QPushButton(this);
-	tertiaryButton_ = new QPushButton(this);
-	elsewhereButton_ = new QPushButton(this);
+	primaryButton_ = new ResponsiveButton(this);
+	secondaryButton_ = new ResponsiveButton(this);
+	tertiaryButton_ = new ResponsiveButton(this);
+	elsewhereButton_ = new ResponsiveButton(this);
 	for (auto *button : {primaryButton_, secondaryButton_, tertiaryButton_, elsewhereButton_})
 		button->setFocusPolicy(Qt::NoFocus); // Clicking must not pull keyboard focus into the dock.
 	buttonRow->addWidget(primaryButton_);
@@ -61,7 +65,7 @@ PromptWidget::PromptWidget(QWidget *parent) : QWidget(parent)
 	auto *recentLabel = new QLabel(QStringLiteral("Or set it to:"), recentSection_);
 	recentLayout->addWidget(recentLabel);
 	for (int i = 0; i < kMaxRecentButtons; ++i) {
-		auto *button = new QPushButton(recentSection_);
+		auto *button = new ResponsiveButton(recentSection_);
 		button->setFocusPolicy(Qt::NoFocus);
 		recentLayout->addWidget(button);
 		recentButtons_.push_back(button);
@@ -105,7 +109,6 @@ void PromptWidget::showPrompt(core::PromptKind kind, const QString &gameName, co
 	// elided in a narrow dock - and gets a highlighted frame, because it is
 	// the one question that should not sit unseen behind another tab.
 	const bool prominent = (kind == core::PromptKind::GameClosed);
-	buttonRow_->setDirection(prominent ? QBoxLayout::TopToBottom : QBoxLayout::LeftToRight);
 	setStyleSheet(prominent ? QStringLiteral("#signalboxPrompt { border: 2px solid #e0a030; border-radius: 4px; }")
 				: QString());
 	QFont messageFont = messageLabel_->font();
