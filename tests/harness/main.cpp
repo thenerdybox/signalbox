@@ -29,6 +29,7 @@
 #include "core/DetectionStateMachine.h"
 #include "core/RecentCategories.h"
 #include "core/CaptureRecoveryPolicy.h"
+#include "core/ConsoleMode.h"
 #include "core/TimingConstants.h"
 #include "detection/DetectedGame.h"
 #include "detection/IGameProvider.h"
@@ -2842,6 +2843,178 @@ void RunCaptureRecoveryScenarios()
 	}
 }
 
+void RunConsoleModeScenarios()
+{
+	std::printf("\n=== SECTION 4: Console mode ===\n");
+	using signalbox::core::ConsoleMode;
+	using signalbox::core::ConsoleModeHooks;
+	using signalbox::core::SearchDebounce;
+
+	// --- The hotkey is registered, with the name the streamer looks for. ---
+	{
+		std::printf("-- Hotkey registration --\n");
+		std::vector<std::pair<std::string, std::string>> registered;
+		const std::size_t id = signalbox::core::RegisterConsoleModeHotkey(
+			[&](const char *name, const char *description) -> std::size_t {
+				registered.emplace_back(name, description);
+				return 7;
+			});
+		Check(registered.size() == 1, "exactly one hotkey is registered");
+		Check(registered.size() == 1 && registered[0].second == "SignalBox: Console mode (set category manually)",
+		      "its label in OBS Settings > Hotkeys is \"SignalBox: Console mode (set category manually)\"");
+		Check(registered.size() == 1 && registered[0].first == "signalbox.console_mode",
+		      "its internal name is signalbox.console_mode");
+		Check(id == 7, "the id OBS returned is kept so it can be saved and unregistered");
+	}
+
+	// --- Toggle pauses and resumes the detector. ---
+	{
+		std::printf("-- Toggle on/off pauses and resumes the detector --\n");
+		bool paused = false;
+		int pauseCalls = 0, entered = 0, exited = 0, changed = 0;
+		ConsoleModeHooks hooks;
+		hooks.setDetectionPaused = [&](bool p) {
+			paused = p;
+			++pauseCalls;
+		};
+		hooks.onEntered = [&]() { ++entered; };
+		hooks.onExited = [&]() { ++exited; };
+		hooks.onChanged = [&]() { ++changed; };
+		ConsoleMode mode(hooks);
+
+		Check(!mode.active() && !paused, "starts off, detector running");
+		mode.toggle();
+		Check(mode.active(), "first press turns Console mode on");
+		Check(paused, "the detector is paused while it is on");
+		Check(entered == 1, "the dialog is opened exactly once");
+		mode.toggle();
+		Check(!mode.active(), "second press turns it off");
+		Check(!paused, "the detector is resumed");
+		Check(exited == 1, "the dialog is closed exactly once");
+		mode.enter();
+		mode.enter();
+		Check(pauseCalls == 3 && entered == 2, "turning on twice in a row does nothing the second time");
+		mode.exit();
+		mode.exit();
+		Check(pauseCalls == 4 && exited == 2, "turning off twice in a row does nothing the second time");
+		Check(changed >= 4, "the dock is told after every change");
+	}
+
+	// --- The debounce: 250 ms, two letters minimum, one query per burst. ---
+	{
+		std::printf("-- Typing debounce --\n");
+		SearchDebounce d;
+		d.onTextChanged(L"z", 0);
+		Check(!d.armed() && !d.due(10000).has_value(), "one letter never searches");
+		d.onTextChanged(L"ze", 1000);
+		d.onTextChanged(L"zel", 1100);
+		d.onTextChanged(L"zeld", 1200);
+		Check(!d.due(1300).has_value(), "still typing: nothing is sent");
+		Check(!d.due(1449).has_value(), "249 ms after the last key: still waiting");
+		const auto q = d.due(1450);
+		Check(q.has_value() && *q == L"zeld", "250 ms after the last key: the latest text is sent, once");
+		Check(!d.due(5000).has_value(), "and not sent again");
+		d.onTextChanged(L"  ab  ", 6000);
+		const auto trimmed = d.due(6250);
+		Check(trimmed.has_value() && *trimmed == L"ab", "surrounding spaces are not searched for");
+		d.onTextChanged(L"zelda", 7000);
+		d.onTextChanged(L"z", 7100);
+		Check(!d.due(9000).has_value(), "deleting back below two letters cancels the pending search");
+		d.onTextChanged(L"mario", 10000);
+		const auto flushed = d.flush();
+		Check(flushed.has_value() && *flushed == L"mario" && !d.flush().has_value(),
+		      "Enter before the delay sends the text right away, once");
+	}
+
+	// --- Picking a result calls the real set-category path with the right id and name. ---
+	{
+		std::printf("-- Pick -> existing set-category path --\n");
+		FakeOverrideStore overrides;
+		FakeCategoryLookup lookup;
+		CategoryResolver resolver(overrides, &lookup);
+		std::vector<std::wstring> activity;
+		CategorySwitchCoordinator coordinator(
+			resolver, [&](const std::wstring &m) { activity.push_back(m); }, []() {});
+		FakeChannelClient channelClient;
+		channelClient.channelInfoToReturn = ChannelSnapshot{L"", L"Just Chatting"};
+		coordinator.setChannelClient(&channelClient);
+
+		bool paused = false;
+		ConsoleModeHooks hooks;
+		hooks.setDetectionPaused = [&](bool p) { paused = p; };
+		hooks.applyCategory = [&](const std::wstring &id, const std::wstring &name) {
+			coordinator.applyCategoryById(id, name, /*live=*/true);
+		};
+		ConsoleMode mode(hooks);
+
+		Check(!mode.pick(L"1", L"Nothing"), "picking while Console mode is off is refused");
+		Check(channelClient.callLog.empty(), "and sends nothing to Twitch");
+
+		mode.enter();
+		Check(!mode.pick(L"1", L""), "an empty name is refused");
+		Check(mode.pick(L"490382", L"The Legend of Zelda: Tears of the Kingdom"), "a result can be picked");
+		Check(channelClient.lastSuccessfullySetCategoryId.has_value() &&
+			      *channelClient.lastSuccessfullySetCategoryId == L"490382",
+		      "Twitch is told the id that was picked");
+		Check(CountCallsStartingWith(channelClient.callLog, "setChannelCategory:490382") == 1,
+		      "exactly one category change is made");
+		Check(AnyMessageContains(activity, L"Set Twitch category to \"The Legend of Zelda: Tears of the Kingdom\""),
+		      "the activity log names the game that was set");
+		Check(mode.active() && paused, "Console mode stays on after a pick, detector still paused");
+		Check(mode.game() == L"The Legend of Zelda: Tears of the Kingdom", "the dock can show the picked game");
+
+		// A second pick replaces the first. Twitch now reports what the first one set,
+		// so the external-writer check sees nothing unexpected.
+		channelClient.channelInfoToReturn =
+			ChannelSnapshot{L"490382", L"The Legend of Zelda: Tears of the Kingdom"};
+		Check(mode.pick(L"27471", L"Minecraft") && mode.game() == L"Minecraft", "a second pick replaces the first");
+		Check(CountCallsStartingWith(channelClient.callLog, "setChannelCategory:27471") == 1,
+		      "and its id is what Twitch is told");
+
+		// --- Back to auto: detector resumes, category is not reverted. ---
+		std::printf("-- Back to auto --\n");
+		const std::size_t callsBefore = channelClient.callLog.size();
+		mode.exit();
+		Check(!mode.active() && !paused, "Back to auto turns the mode off and resumes the detector");
+		Check(channelClient.callLog.size() == callsBefore, "turning it off does not touch the category");
+		mode.enter();
+		Check(mode.game().empty(), "a new session of Console mode starts with no game picked");
+		Check(channelClient.callLog.size() == callsBefore, "and nothing is sent until one is picked");
+	}
+
+	// --- Entering Console mode forgets earlier detection so nothing acts over the pick. ---
+	{
+		std::printf("-- Entering drops stale detection state --\n");
+		TimingConstants timing;
+		timing.confirmPolls = 1;
+		const InstalledGame game = MakeGame(L"Coin Pusher Live", Platform::Steam, L"2731830");
+		const DetectedGame detected = MakeDetected(game, 700);
+
+		auto runToGraceExpiry = [&](bool dropFirst, RecordingListener &listener) {
+			FakeClock clock;
+			DetectionStateMachine sm(listener, timing);
+			sm.setTimeSourceForTesting([&] { return clock.now(); });
+			sm.setLive(true);
+			sm.onLiveCategoryKnown(game.displayName);
+			sm.onPollResult(detected);
+			sm.onTrackedProcessExited(ExitReason::Clean, game);
+			Check(sm.state() == State::Grace, "a game that just closed is in its grace window");
+			if (dropFirst)
+				sm.dropDetectionState();
+			clock.advanceS(600);
+			sm.onTick();
+			return sm.state();
+		};
+		RecordingListener control;
+		runToGraceExpiry(false, control);
+		Check(control.promptCount == 1, "control: left alone, the grace window ends in a question");
+		RecordingListener dropped;
+		const State after = runToGraceExpiry(true, dropped);
+		Check(dropped.promptCount == 0 && dropped.applyFallbackCount == 0 && after == State::Idle,
+		      "after Console mode starts, the old grace window asks nothing and changes nothing");
+	}
+}
+
 int main()
 {
 	std::printf("SignalBox - standalone harness (no OBS, no live Twitch)\n");
@@ -2860,6 +3033,7 @@ int main()
 	RunCoordinatorScenarios();
 	RunRecentCategoryScenarios();
 	RunCaptureRecoveryScenarios();
+	RunConsoleModeScenarios();
 	RunInstallIndexScenario();
 	RunTokenValidationTimingScenario();
 	RunShippedDataFileScenarios();

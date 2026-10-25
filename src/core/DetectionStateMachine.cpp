@@ -768,6 +768,21 @@ void DetectionStateMachine::onExternalChangeDetected()
 	listener_.onAutomationPaused(L"Category was changed outside SignalBox — automation paused");
 }
 
+void DetectionStateMachine::dropDetectionState()
+{
+	if (state_ != State::ExternalOverride)
+		state_ = State::Idle;
+	activeGame_.reset();
+	graceGame_.reset();
+	pendingCandidate_.reset();
+	pendingConfirmPolls_ = 0;
+	pendingCameFromGrace_ = false;
+	promptOutstanding_ = false;
+	appliedCategoryName_.clear();
+	noGameAskAt_.reset();
+	idleSince_.reset();
+}
+
 void DetectionStateMachine::resume()
 {
 	// Re-detect from scratch rather than assuming the previous ACTIVE

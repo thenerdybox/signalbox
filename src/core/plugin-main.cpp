@@ -42,6 +42,7 @@
 #include "../ui/CategoryDock.h"
 #include "CaptureRecovery.h"
 #include "CategoryResolver.h"
+#include "ConsoleMode.h"
 #include "DetectionEngine.h"
 #include "PluginConfig.h"
 
@@ -55,6 +56,34 @@ signalbox::core::DetectionEngine *g_engine = nullptr;
 signalbox::core::PluginConfig *g_config = nullptr;
 signalbox::core::CategoryResolver *g_resolver = nullptr;
 signalbox::core::CaptureRecovery *g_captureRecovery = nullptr;
+std::size_t g_consoleHotkeyId = static_cast<std::size_t>(-1); // obs_hotkey_id; -1 = none.
+
+// Hotkey thread: only queue the toggle onto the Qt main thread.
+void ConsoleModeHotkeyCallback(void *, obs_hotkey_id, obs_hotkey_t *, bool pressed)
+{
+	signalbox::ui::CategoryDock *dock = g_dock;
+	if (!pressed || !dock) {
+		return;
+	}
+	QMetaObject::invokeMethod(dock, "toggleConsoleMode", Qt::QueuedConnection);
+}
+
+// Keeps the key binding the user chose in Settings > Hotkeys across restarts.
+void ConsoleModeSaveCallback(obs_data_t *saveData, bool saving, void *)
+{
+	if (g_consoleHotkeyId == static_cast<std::size_t>(-1)) {
+		return;
+	}
+	if (saving) {
+		obs_data_array_t *array = obs_hotkey_save(g_consoleHotkeyId);
+		obs_data_set_array(saveData, signalbox::core::kConsoleModeHotkeySaveKey, array);
+		obs_data_array_release(array);
+	} else {
+		obs_data_array_t *array = obs_data_get_array(saveData, signalbox::core::kConsoleModeHotkeySaveKey);
+		obs_hotkey_load(g_consoleHotkeyId, array);
+		obs_data_array_release(array);
+	}
+}
 
 // bmalloc'd UTF-8 path -> std::wstring, freeing the bmalloc'd
 // intermediate. Same conversion pattern already used by TokenStore.cpp/
@@ -274,6 +303,18 @@ bool obs_module_load(void)
 		}
 	});
 
+	// Console mode: the dock tells the engine to stop scanning while it is on.
+	QObject::connect(g_dock, &signalbox::ui::CategoryDock::detectionPauseRequested, g_dock, [](bool paused) {
+		if (g_engine) {
+			g_engine->setPaused(paused);
+		}
+	});
+	g_consoleHotkeyId = signalbox::core::RegisterConsoleModeHotkey([](const char *name, const char *description) {
+		return static_cast<std::size_t>(
+			obs_hotkey_register_frontend(name, description, &ConsoleModeHotkeyCallback, nullptr));
+	});
+	obs_frontend_add_save_callback(&ConsoleModeSaveCallback, nullptr);
+
 	// Capture card recovery: lives for the whole session (owned by the dock,
 	// which OBS destroys with the main window).
 	g_captureRecovery = new signalbox::core::CaptureRecovery(*g_config, g_dock);
@@ -286,6 +327,11 @@ bool obs_module_load(void)
 void obs_module_unload(void)
 {
 	obs_frontend_remove_event_callback(&LiveStateTrampoline, nullptr);
+	obs_frontend_remove_save_callback(&ConsoleModeSaveCallback, nullptr);
+	if (g_consoleHotkeyId != static_cast<std::size_t>(-1)) {
+		obs_hotkey_unregister(g_consoleHotkeyId);
+		g_consoleHotkeyId = static_cast<std::size_t>(-1);
+	}
 
 	if (g_engine) {
 		// Normally already stopped/joined by LiveStateTrampoline's

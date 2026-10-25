@@ -146,6 +146,12 @@ void DetectionEngine::setLive(bool live)
 	wakeCv_.notify_all(); // Live going true should shorten the wait immediately, not on the next natural wake.
 }
 
+void DetectionEngine::setPaused(bool paused)
+{
+	paused_.store(paused, std::memory_order_relaxed);
+	wakeCv_.notify_all();
+}
+
 void DetectionEngine::workerLoop()
 {
 	// WORKER THREAD. See the threading-boundary comment block at the
@@ -191,6 +197,21 @@ void DetectionEngine::workerLoop()
 	auto lastIndexMaintenanceAt = std::chrono::steady_clock::now();
 
 	while (!stopRequested_) {
+		// --- Console mode: do nothing at all until resumed. ---
+		if (paused_.load(std::memory_order_relaxed)) {
+			if (tracking_) {
+				processScanner_.stopTracking(trackedPid_);
+				tracking_ = false;
+				trackedPid_ = 0;
+				trackedGame_.reset();
+				challengerPid_ = 0;
+				challengerStablePolls_ = 0;
+			}
+			std::unique_lock<std::mutex> pauseLock(wakeMutex_);
+			wakeCv_.wait(pauseLock, [this] { return stopRequested_.load() || !paused_.load(); });
+			continue; // Resumed (or stopping): scan straight away.
+		}
+
 		// --- Index maintenance: a cheap stat()-class check every
 		// iteration; a real rebuild only on the cheap change signal, an
 		// explicit rescan, or the long-timer fallback (registry-only
@@ -378,7 +399,7 @@ void DetectionEngine::workerLoop()
 
 		std::unique_lock<std::mutex> lock(wakeMutex_);
 		wakeCv_.wait_for(lock, std::chrono::seconds(intervalS),
-				  [this] { return stopRequested_.load() || rescanRequested_.load(); });
+				  [this] { return stopRequested_.load() || rescanRequested_.load() || paused_.load(); });
 	}
 
 	if (tracking_) {

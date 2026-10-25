@@ -41,6 +41,7 @@
 #include "../twitch/TwitchCategoryLookup.h"
 #include "../twitch/TwitchChannelClient.h"
 #include "../twitch/TwitchClient.h"
+#include "ConsoleModeDialog.h"
 #include "GameOverrideDialog.h"
 #include "PromptToast.h"
 #include "PromptWidget.h"
@@ -109,7 +110,8 @@ CategoryDock::CategoryDock(core::PluginConfig &config, core::CategoryResolver &r
 				  appendActivityLogEntry(L"Switched to \"" + categoryName + L"\"", previousCategory);
 			  }
 			  refreshPresentationIfVisible();
-		  })
+		  }),
+	  consoleMode_(consoleHooks())
 {
 	// Effective timing + the three persisted behavior toggles - see
 	// class doc comment's "ONE PluginConfig INSTANCE" note. These used
@@ -185,8 +187,12 @@ CategoryDock::CategoryDock(core::PluginConfig &config, core::CategoryResolver &r
 	tickTimer_ = new QTimer(this);
 	tickTimer_->setInterval(static_cast<int>(pluginConfig_.timing().pollIntervalS) * 1000);
 	connect(tickTimer_, &QTimer::timeout, this, [this]() {
-		stateMachine_.onTick();
-		maybeVerifyLiveCategory();    // Scheduled live-category check - see its doc comment.
+		// Console mode: nothing on the state machine's clock may act while the
+		// streamer is choosing the category by hand.
+		if (!consoleMode_.active()) {
+			stateMachine_.onTick();
+			maybeVerifyLiveCategory(); // Scheduled live-category check - see its doc comment.
+		}
 		syncPromptWidgetVisibility(); // onTick() can resolve a timeout without going through PromptWidget's own handlers.
 		maybeValidateTwitchToken();   // Hourly Twitch token validation (project brief item 5) - see its own doc comment.
 		updateCountdownTimerState();
@@ -422,6 +428,30 @@ void CategoryDock::buildUi()
 	connect(manualLockButton_, &QPushButton::toggled, this, &CategoryDock::onManualLockToggled);
 	statusLayout->addWidget(manualLockButton_);
 
+	// Console mode: the game is on a console, not this PC. Pauses detection
+	// and lets the streamer type the category. Also an OBS hotkey.
+	consoleModeButton_ = new QPushButton(QStringLiteral("Console mode"), statusGroup);
+	consoleModeButton_->setCheckable(true);
+	consoleModeButton_->setToolTip(
+		QStringLiteral("Playing on a console? Turn this on to stop SignalBox looking for games on this PC "
+			       "and type the category yourself. Press again to go back to automatic."));
+	connect(consoleModeButton_, &QPushButton::clicked, this, [this]() { toggleConsoleMode(); });
+	statusLayout->addWidget(consoleModeButton_);
+
+	consoleBanner_ = new QLabel(statusGroup);
+	consoleBanner_->setWordWrap(true);
+	consoleBanner_->setVisible(false);
+	consoleBanner_->setStyleSheet(QStringLiteral("QLabel { background: #1e3a4a; color: #bfe4f5; "
+						      "border: 1px solid #37718c; border-radius: 3px; padding: 6px; }"));
+	statusLayout->addWidget(consoleBanner_);
+	consoleSetButton_ = new QPushButton(QStringLiteral("Set category..."), statusGroup);
+	consoleSetButton_->setVisible(false);
+	connect(consoleSetButton_, &QPushButton::clicked, this, [this]() {
+		if (consoleDialog_)
+			consoleDialog_->presentAndFocus();
+	});
+	statusLayout->addWidget(consoleSetButton_);
+
 	root->addWidget(statusGroup);
 
 	// --- Twitch ---
@@ -582,6 +612,9 @@ bool SameDetected(const std::optional<detection::DetectedGame> &a, const std::op
 
 void CategoryDock::onDetectionResult(std::optional<detection::DetectedGame> detected, std::size_t /*indexedGameCount*/)
 {
+	if (consoleMode_.active())
+		return; // A result already in flight when Console mode turned on.
+
 	// One line per CHANGE in what is running, never one per poll. This is
 	// the observability that was missing entirely: detection ran every
 	// few seconds and wrote nothing anywhere, so a session where nothing
@@ -606,6 +639,8 @@ void CategoryDock::onDetectionResult(std::optional<detection::DetectedGame> dete
 
 void CategoryDock::onTrackedProcessExited(detection::ExitReason reason, const detection::InstalledGame &exitedGame)
 {
+	if (consoleMode_.active())
+		return;
 	stateMachine_.onTrackedProcessExited(reason, exitedGame);
 	syncPromptWidgetVisibility(); // Entering Grace drops any outstanding prompt.
 	updateCountdownTimerState();
@@ -798,6 +833,11 @@ void CategoryDock::attachTwitchClient(const QString &accessToken, const QString 
 	categorySuggestionNames_.clear();
 	connect(twitchClient_.get(), &twitch::TwitchClient::categorySuggestionsReady, this,
 		&CategoryDock::onCategorySuggestions);
+	connect(twitchClient_.get(), &twitch::TwitchClient::requestFailed, this,
+		[this](QString context, QString reason) {
+			if (context == QStringLiteral("searchCategorySuggestions") && consoleDialog_)
+				consoleDialog_->setSearchFailed(lastConsoleQuery_, reason);
+		});
 
 	connect(twitchClient_.get(), &twitch::TwitchClient::currentUserResolved, this,
 		[this](QString userId, QString login) {
@@ -1431,6 +1471,8 @@ void CategoryDock::refreshStatusLabels()
 			QStringLiteral(" SignalBox won't ask until a game starts here or the stream ends."));
 	}
 
+	refreshConsoleModeUi();
+
 	const bool paused = stateMachine_.isAutomationPaused();
 	pausedBanner_->setVisible(paused);
 	resumeButton_->setVisible(paused);
@@ -1631,6 +1673,10 @@ void CategoryDock::runCategorySearch()
 
 void CategoryDock::onCategorySuggestions(const QString &query, const QVector<twitch::CategoryMatch> &matches)
 {
+	// Console mode's box asks through the same client; it drops stale answers itself.
+	if (consoleDialog_)
+		consoleDialog_->setResults(query, matches);
+
 	// Results arrive asynchronously, and by then the box may say something
 	// else (or nothing, after a pick). The signal carries the query it
 	// answers, so an answer for anything but the current text is dropped.
@@ -1677,6 +1723,107 @@ void CategoryDock::applySearchedCategory(const QString &typedOrPicked)
 	// The id is already in hand from the search, so skip the name lookup.
 	coordinator_.applyCategoryById(id.toStdWString(), name.toStdWString(), stateMachine_.isLive());
 	refreshPresentationIfVisible();
+}
+
+core::ConsoleModeHooks CategoryDock::consoleHooks()
+{
+	core::ConsoleModeHooks hooks;
+	hooks.setDetectionPaused = [this](bool paused) { emit detectionPauseRequested(paused); };
+	hooks.onEntered = [this]() { onConsoleModeEntered(); };
+	hooks.onExited = [this]() { onConsoleModeExited(); };
+	hooks.applyCategory = [this](const std::wstring &id, const std::wstring &name) {
+		stateMachine_.noteUserCategoryChoice(); // Their choice: verification must not undo it.
+		if (id.empty())
+			coordinator_.applyCategoryByName(name, stateMachine_.isLive());
+		else
+			coordinator_.applyCategoryById(id, name, stateMachine_.isLive()); // The existing set-category path.
+	};
+	hooks.onChanged = [this]() {
+		refreshConsoleModeUi();
+		refreshPresentationIfVisible();
+	};
+	return hooks;
+}
+
+void CategoryDock::toggleConsoleMode()
+{
+	consoleMode_.toggle();
+}
+
+void CategoryDock::onConsoleModeEntered()
+{
+	// Forget whatever was detected before: a grace window or prompt left over
+	// would otherwise act on the category the streamer is about to choose.
+	stateMachine_.dropDetectionState();
+	syncPromptWidgetVisibility();
+	updateCountdownTimerState();
+	appendActivityLogEntry(L"Console mode on - not looking for games on this PC", L"");
+	obs_log(LOG_INFO, "console mode: on (detection paused)");
+
+	if (!consoleDialog_) {
+		QWidget *top = window();
+		consoleDialog_ = new ConsoleModeDialog(top == this ? nullptr : top);
+		connect(consoleDialog_, &ConsoleModeDialog::queryRequested, this, [this](const QString &query) {
+			lastConsoleQuery_ = query;
+			if (!twitchClient_) {
+				consoleDialog_->setSearchFailed(query, QStringLiteral("Connect to Twitch in SignalBox first."));
+				return;
+			}
+			twitchClient_->searchCategorySuggestions(query);
+		});
+		connect(consoleDialog_, &ConsoleModeDialog::categoryPicked, this, &CategoryDock::onConsoleCategoryPicked);
+		connect(consoleDialog_, &ConsoleModeDialog::backToAutoRequested, this, [this]() { consoleMode_.exit(); });
+	}
+	QStringList recents;
+	for (const std::wstring &name : pluginConfig_.recentCategories())
+		recents.push_back(toQString(name));
+	consoleDialog_->setRecents(recents);
+	consoleDialog_->setCurrentGame(QString());
+	consoleDialog_->presentAndFocus();
+}
+
+void CategoryDock::onConsoleModeExited()
+{
+	if (consoleDialog_)
+		consoleDialog_->hide();
+	// Detection is back on: start it over rather than trusting what was
+	// believed before. The category is left exactly as the streamer set it.
+	stateMachine_.switchBackToPcGame();
+	syncPromptWidgetVisibility();
+	updateCountdownTimerState();
+	appendActivityLogEntry(L"Console mode off - detecting games again", L"");
+	obs_log(LOG_INFO, "console mode: off (detection resumed)");
+}
+
+void CategoryDock::onConsoleCategoryPicked(const QString &id, const QString &name)
+{
+	if (!consoleMode_.pick(id.toStdWString(), name.toStdWString()))
+		return;
+	if (consoleDialog_) {
+		consoleDialog_->setCurrentGame(name);
+		consoleDialog_->hide(); // Stay in Console mode; the dock shows it.
+	}
+}
+
+void CategoryDock::refreshConsoleModeUi()
+{
+	const bool on = consoleMode_.active();
+	{
+		const QSignalBlocker blocker(consoleModeButton_);
+		consoleModeButton_->setChecked(on);
+	}
+	consoleModeButton_->setText(on ? QStringLiteral("Console mode: ON - press to go back to auto")
+				       : QStringLiteral("Console mode"));
+	consoleModeButton_->setEnabled(on || !currentTokens_.accessToken.isEmpty()); // Needs Twitch to set anything.
+	consoleBanner_->setVisible(on);
+	consoleSetButton_->setVisible(on);
+	if (on) {
+		const QString game = toQString(consoleMode_.game());
+		consoleBanner_->setText(QStringLiteral("Console mode: %1\nSignalBox is not looking for games on this PC.")
+						.arg(game.isEmpty() ? QStringLiteral("(no game set yet)") : game));
+	}
+	streamEndingButton_->setEnabled(!on);
+	fixDetectionButton_->setEnabled(!on && currentGameForFix().has_value());
 }
 
 void CategoryDock::onRecentCategoryActivated(int index)

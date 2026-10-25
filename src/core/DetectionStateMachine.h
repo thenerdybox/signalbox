@@ -409,6 +409,12 @@ public:
 	// Dock "resume" action after ExternalOverride or a flap-breaker pause.
 	void resume();
 
+	// Console mode starts: forget every game, grace window and prompt, so
+	// nothing seen before the streamer took over can act afterwards (a grace
+	// window running out would otherwise set the fallback category over
+	// their choice). Unlike resume() it leaves a flap-breaker pause alone.
+	void dropDetectionState();
+
 	// Dock manual-lock toggle. When true, onPollResult keeps updating
 	// internal state (so the dock can still show "would switch to X")
 	// but Listener::onSwitchIn/onApplyFallback are never invoked.

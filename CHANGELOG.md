@@ -5,6 +5,22 @@ Changelog](https://keepachangelog.com/en/1.1.0/) format. This file is the
 single source of truth for release notes — GitHub Releases and the public
 patch-notes page are both generated from it.
 
+## [0.2.11] — 2026-10-24
+
+### Added
+
+- **Console mode.** For streams where the game isn't on your PC. Press the new
+  "Console mode" button in the SignalBox dock, or bind the OBS hotkey
+  "SignalBox: Console mode (set category manually)" (Settings > Hotkeys), and
+  SignalBox stops looking for games on your PC. A small box pops up in front
+  with the cursor already in it: type the game and Twitch's own category
+  suggestions show up as you type. Arrow keys and Enter pick one, and that
+  becomes your category. The dock shows "Console mode: <game>" the whole
+  time, and nothing will change your category behind your back. Press the
+  button or hotkey again, or "Back to auto" in the box, and normal game
+  detection comes back. Your category is left alone until the next game is
+  detected. Your recent games show up as quick picks when the box is empty.
+
 ## [0.2.10] — 2026-10-21
 
 ### Added

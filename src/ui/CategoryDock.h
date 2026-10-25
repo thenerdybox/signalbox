@@ -108,6 +108,7 @@
 
 #include "../core/CategoryResolver.h"
 #include "../core/CategorySwitchCoordinator.h"
+#include "../core/ConsoleMode.h"
 #include "../core/DetectionStateMachine.h"
 #include "../core/PluginConfig.h"
 #include "../detection/DetectedGame.h"
@@ -141,6 +142,7 @@ namespace signalbox::ui {
 
 class PromptWidget;
 class PromptToast;
+class ConsoleModeDialog;
 
 class CategoryDock : public QWidget, private core::DetectionStateMachine::Listener {
 	Q_OBJECT
@@ -163,6 +165,17 @@ signals:
 	// the module ownership split - DESIGN.md 4.2) - plugin-main.cpp
 	// connects this signal to g_engine->requestRescan() once both exist.
 	void rescanRequested();
+	// Console mode turned on (true) or off (false): plugin-main.cpp connects
+	// this to DetectionEngine::setPaused(), for the same reason as above.
+	void detectionPauseRequested(bool paused);
+
+public slots:
+	// The OBS hotkey and the dock button. Queued onto the main thread by the
+	// hotkey callback; see core/ConsoleMode.h.
+	void toggleConsoleMode();
+
+public:
+	bool consoleModeActive() const { return consoleMode_.active(); }
 
 public:
 	// Feed one poll's worth of detection from the coordinator (see the
@@ -313,6 +326,14 @@ private:
 	void onUndoRequested(std::size_t logIndex);
 	void onRescanClicked();
 	void onFixDetectionClicked();
+
+	// Console mode (core/ConsoleMode.h). The mode object decides; these are
+	// its hooks into the dock, the state machine and Twitch.
+	void onConsoleModeEntered();
+	void onConsoleModeExited();
+	void onConsoleCategoryPicked(const QString &id, const QString &name);
+	void refreshConsoleModeUi();
+	core::ConsoleModeHooks consoleHooks();
 
 	// "Stream Ending" - DetectionStateMachine::beginStreamEndingHold() /
 	// clearStreamEndingHold(). Checkable, and the check state is driven
@@ -488,6 +509,12 @@ private:
 	QHash<QString, QString> categorySuggestionNames_;     // Lower-cased name -> name as Twitch spells it.
 	QLabel *playingElsewhereBanner_ = nullptr;            // Visible only while the hold is on.
 	QPushButton *resumeAskingButton_ = nullptr;           // "Switching to a PC game" - ends the hold.
+	core::ConsoleMode consoleMode_;
+	ConsoleModeDialog *consoleDialog_ = nullptr; // Created on first use; child of the dock.
+	QString lastConsoleQuery_;                   // What the dialog last asked Twitch for.
+	QPushButton *consoleModeButton_ = nullptr;   // Checkable; mirrors consoleMode_.active().
+	QLabel *consoleBanner_ = nullptr;            // "Console mode: <game>"; visible only while on.
+	QPushButton *consoleSetButton_ = nullptr;    // Re-opens the dialog after "Hide".
 	QScrollArea *scrollArea_ = nullptr; // Wraps all dock content so nothing clips in a short dock.
 	PromptWidget *promptWidget_ = nullptr;
 	std::unique_ptr<PromptToast> toast_; // Parentless always-on-top card - see PromptToast.h.

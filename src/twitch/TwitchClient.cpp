@@ -539,6 +539,10 @@ void TwitchClient::runCategorySearch(const QString &query, bool forSuggestions)
 	QUrl url(kHelixBaseUrl + QStringLiteral("/search/categories"));
 	QUrlQuery urlQuery;
 	urlQuery.addQueryItem(QStringLiteral("query"), query);
+	if (forSuggestions) {
+		// A dropdown shows ten at most; Twitch's default is twenty.
+		urlQuery.addQueryItem(QStringLiteral("first"), QStringLiteral("10"));
+	}
 	url.setQuery(urlQuery);
 
 	transport_->send(buildHelixRequest(HttpMethod::Get, url), [this, key, context, deliver, forSuggestions](HttpResponse response) {

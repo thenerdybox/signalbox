@@ -191,6 +191,13 @@ public:
 	// start().
 	void setLive(bool live);
 
+	// Console mode: while paused the worker does no process scanning, index
+	// maintenance or ranking and just sleeps until resumed or stopped. Any
+	// process being followed is released, so a resume starts from a clean
+	// scan. Safe from any thread.
+	void setPaused(bool paused);
+	bool isPaused() const { return paused_.load(std::memory_order_relaxed); }
+
 private:
 	void workerLoop(); // Runs entirely on worker_. See class threading note.
 
@@ -216,6 +223,7 @@ private:
 	std::atomic<bool> stopRequested_{false};
 	std::atomic<bool> rescanRequested_{false};
 	std::atomic<bool> live_{false};
+	std::atomic<bool> paused_{false};
 	std::mutex wakeMutex_;
 	std::condition_variable wakeCv_;
 

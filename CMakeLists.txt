@@ -40,7 +40,7 @@ if(ENABLE_QT)
   # Leaving Network unlinked is what keeps that a build error rather than a
   # runtime failure the user discovers mid-stream.
   find_package(Qt6 COMPONENTS Widgets Core REQUIRED)
-  target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE Qt6::Core Qt6::Widgets $<$<PLATFORM_ID:Windows>:shell32>)
+  target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE Qt6::Core Qt6::Widgets $<$<PLATFORM_ID:Windows>:shell32> $<$<PLATFORM_ID:Windows>:user32>)
   # libcurl: the same HTTPS transport OBS itself ships (bin/64bit/libcurl.dll)
   # and uses for its own traffic - see twitch/HttpTransport.h. Linked only
   # against the import lib; the plugin resolves to whichever libcurl.dll is
@@ -124,6 +124,9 @@ target_sources(
     src/ui/SettingsDialog.cpp
     src/ui/GameOverrideDialog.h
     src/ui/GameOverrideDialog.cpp
+    src/ui/ConsoleModeDialog.h
+    src/ui/ConsoleModeDialog.cpp
+    src/core/ConsoleMode.h
 )
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})
@@ -151,6 +154,7 @@ if(ENABLE_QT)
     src/core/RecentCategories.h
     src/core/TimingConstants.h
     src/core/CaptureRecoveryPolicy.h
+    src/core/ConsoleMode.h
     src/detection/DetectedGame.h
     src/detection/ProcessScanner.h
     src/detection/IGameProvider.h
