@@ -237,6 +237,9 @@ void CategoryDock::buildUi()
 	scrollArea_ = new QScrollArea(this);
 	scrollArea_->setWidgetResizable(true);
 	scrollArea_->setFrameShape(QFrame::NoFrame);
+	// Ignored vertically: the scroll area asks for no minimum height, so in a short dock it is the
+	// part that gives way (and scrolls) while the footer underneath keeps all the room it needs.
+	scrollArea_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
 	// Buttons wrap to the dock's width (DockLayout.h), so this should never show.
 	// It is the safety net: anything that still cannot fit is scrolled to, never hidden.
 	scrollArea_->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
@@ -354,8 +357,7 @@ void CategoryDock::buildUi()
 	connect(categorySearchTimer_, &QTimer::timeout, this, &CategoryDock::runCategorySearch);
 	connect(categoryCompleter_, QOverload<const QString &>::of(&QCompleter::activated), this,
 		[this](const QString &picked) { applySearchedCategory(picked); });
-	connect(categorySearchEdit_, &QLineEdit::returnPressed, this,
-		[this]() { applySearchedCategory(categorySearchEdit_->text()); });
+	connect(categorySearchEdit_, &QLineEdit::returnPressed, this, &CategoryDock::onCategorySearchEnter);
 	statusLayout->addWidget(categorySearchEdit_);
 
 	// The streamer said (by setting a category with nothing running) that
@@ -502,16 +504,18 @@ void CategoryDock::buildUi()
 	// --- Activity log ---
 	auto *logGroup = new QGroupBox(QStringLiteral("Activity"), this);
 	auto *logLayout = new QVBoxLayout(logGroup);
-	activityLogView_ = new QListWidget(logGroup);
+	activityLogView_ = new ActivityLogView(logGroup);
 	activityLogView_->setMinimumHeight(90); // In a scroll area the log would otherwise squash to nothing.
-	// Long entries stay on one line and the list scrolls sideways (the vertical
-	// bar stays too). Wrapping them made a narrow dock a column of tall rows.
-	ConfigureActivityLog(activityLogView_);
+	// Entries wrap to the dock's width; each row is laid out at the width it has (DockLayout.h).
 	logLayout->addWidget(activityLogView_);
 	root->addWidget(logGroup, /*stretch=*/1);
 
 	// --- Footer ---
-	auto *footer = new FlowLayout(); // Wraps onto a second row in a narrow dock.
+	// Pinned under the scroll area, never inside it: Check for updates, Rescan and
+	// Settings must be reachable however short the dock is. Only the middle scrolls.
+	auto *footerBar = new QWidget(this);
+	auto *footer = new FlowLayout(footerBar); // Wraps onto a second row in a narrow dock.
+	footer->setContentsMargins(6, 4, 6, 6);
 	// Version links to the patch notes; the build id sits beside it as
 	// plain text (see CMakeLists.txt's BUILD IDENTITY block). Two compiles
 	// of the same version are otherwise indistinguishable in the UI, which
@@ -530,24 +534,25 @@ void CategoryDock::buildUi()
 		QStringLiteral("<a href=\"%3\">v%1</a>"
 				" <span style=\"color:palette(mid);\">%2</span>")
 			.arg(QString::fromUtf8(PLUGIN_VERSION), QString::fromUtf8(SIGNALBOX_BUILD_ID), patchNotesUrl),
-		this);
+		footerBar);
 	versionLabel_->setToolTip(QStringLiteral("Build %1 - click the version for patch notes.")
 					  .arg(QString::fromUtf8(SIGNALBOX_BUILD_ID)));
 	versionLabel_->setOpenExternalLinks(true); // User-clicked only - never auto-navigated.
 	footer->addWidget(versionLabel_);
-	checkUpdatesButton_ = new ResponsiveButton(QStringLiteral("Check for updates"), this);
+	checkUpdatesButton_ = new ResponsiveButton(QStringLiteral("Check for updates"), footerBar);
 	connect(checkUpdatesButton_, &QPushButton::clicked, this, &CategoryDock::onCheckForUpdatesClicked);
 	footer->addWidget(checkUpdatesButton_);
-	rescanButton_ = new ResponsiveButton(QStringLiteral("Rescan"), this);
+	rescanButton_ = new ResponsiveButton(QStringLiteral("Rescan"), footerBar);
 	rescanButton_->setToolTip(
-		QStringLiteral("Immediately re-scan installed games (this normally happens automatically every "
-				"few minutes, or on the next detection)."));
+		QStringLiteral("Makes SignalBox look at your computer again for installed games and apps, and "
+				"re-read its lists (the game names and the \"never a game\" list). Use it after "
+				"installing a game or changing those lists. It does not change your Twitch category."));
 	connect(rescanButton_, &QPushButton::clicked, this, &CategoryDock::onRescanClicked);
 	footer->addWidget(rescanButton_);
-	settingsButton_ = new ResponsiveButton(QStringLiteral("Settings..."), this);
+	settingsButton_ = new ResponsiveButton(QStringLiteral("Settings..."), footerBar);
 	connect(settingsButton_, &QPushButton::clicked, this, &CategoryDock::onSettingsClicked);
 	footer->addWidget(settingsButton_);
-	root->addLayout(footer);
+	outer->addWidget(footerBar); // Outside the scroll area.
 
 	// Nothing is connected yet at construction, so this opens on the
 	// Twitch section with Status hidden. setTwitchClientId()'s warm start
@@ -555,6 +560,7 @@ void CategoryDock::buildUi()
 	// what makes the common case (already authorised) show Status without
 	// the Twitch box ever flashing into view.
 	ShrinkLabelsToDock(content);
+	ShrinkLabelsToDock(footerBar);
 	refreshDockSections();
 	refreshRecentCategories();
 }
@@ -854,8 +860,12 @@ void CategoryDock::attachTwitchClient(const QString &accessToken, const QString 
 		&CategoryDock::onCategorySuggestions);
 	connect(twitchClient_.get(), &twitch::TwitchClient::requestFailed, this,
 		[this](QString context, QString reason) {
-			if (context == QStringLiteral("searchCategorySuggestions") && consoleDialog_)
-				consoleDialog_->setSearchFailed(lastConsoleQuery_, reason);
+			if (context == QStringLiteral("searchCategorySuggestions")) {
+				searchEnter_.reset(); // Do not leave Enter waiting for an answer that is not coming.
+				lastSentQuery_.clear();
+				if (consoleDialog_)
+					consoleDialog_->setSearchFailed(lastConsoleQuery_, reason);
+			}
 		});
 
 	connect(twitchClient_.get(), &twitch::TwitchClient::currentUserResolved, this,
@@ -1552,8 +1562,6 @@ void CategoryDock::refreshLogView()
 	// from refreshPresentationIfVisible() - i.e. on an actual log
 	// change while visible, or once when becoming visible again. Never
 	// from a timer.
-	// The rebuild would snap a sideways-scrolled list back to the left edge.
-	const int horizontalPos = activityLogView_->horizontalScrollBar()->value();
 	activityLogView_->clear();
 	for (std::size_t i = 0; i < logEntries_.size(); ++i) {
 		const LogEntry &entry = logEntries_[i];
@@ -1563,15 +1571,10 @@ void CategoryDock::refreshLogView()
 		// One-click Undo (DESIGN.md 2.2 / Section 5) - only offered for
 		// entries that actually changed the category and haven't
 		// already been undone.
-		if (QPushButton *undoButton = AddLogRow(activityLogView_, text, !entry.previousCategory.empty() && !entry.undone))
+		if (QPushButton *undoButton = activityLogView_->addRow(text, !entry.previousCategory.empty() && !entry.undone))
 			connect(undoButton, &QPushButton::clicked, this, [this, i]() { onUndoRequested(i); });
 	}
-	if (activityLogView_->count() > 0)
-		activityLogView_->scrollToBottom();
-	// Item layout is deferred, so the bar has no range yet; restore once it does.
-	QTimer::singleShot(0, activityLogView_, [view = activityLogView_, horizontalPos]() {
-		view->horizontalScrollBar()->setValue(horizontalPos);
-	});
+	activityLogView_->scrollToNewest();
 }
 
 void CategoryDock::updateCountdownTimerState()
@@ -1658,12 +1661,33 @@ void CategoryDock::noteCategoryChosenFromSignalBox(const QString &categoryName)
 	updateCountdownTimerState();
 }
 
+void CategoryDock::onCategorySearchEnter()
+{
+	// Same rule as Console mode's box (core::EnterBeforeResults): Enter on a name Twitch has
+	// already returned picks it; Enter before the answer is back waits and picks the top match.
+	const QString typed = categorySearchEdit_->text().trimmed();
+	if (categorySuggestionIds_.contains(typed.toLower())) {
+		searchEnter_.reset();
+		applySearchedCategory(typed);
+		return;
+	}
+	if (typed.size() < 2 || typed == lastAnsweredQuery_)
+		return; // Too short to search, or Twitch already said nothing matches.
+	if (!twitchClient_) 
+		return;
+	if (searchEnter_.onEnter(typed.toStdWString(), typed != lastSentQuery_))
+		runCategorySearch(); // Not asked yet: ask now, not after the typing pause.
+}
+
 void CategoryDock::onCategorySearchTextChanged()
 {
+	searchEnter_.reset(); // Typing again cancels a waiting Enter.
 	// Restarting the timer on every keystroke is the debounce. Anything
 	// already in flight is judged by the stale-result rule in
 	// onCategorySuggestions() when it lands, not cancelled here.
 	if (categorySearchEdit_->text().trimmed().size() < 2) {
+		lastSentQuery_.clear();
+		lastAnsweredQuery_.clear();
 		categorySearchTimer_->stop();
 		categorySuggestionModel_->setStringList(QStringList());
 		categorySuggestionIds_.clear();
@@ -1678,6 +1702,8 @@ void CategoryDock::runCategorySearch()
 	const QString query = categorySearchEdit_->text().trimmed();
 	if (query.size() < 2 || !twitchClient_)
 		return;
+	categorySearchTimer_->stop();
+	lastSentQuery_ = query;
 	twitchClient_->searchCategorySuggestions(query);
 }
 
@@ -1692,6 +1718,7 @@ void CategoryDock::onCategorySuggestions(const QString &query, const QVector<twi
 	// answers, so an answer for anything but the current text is dropped.
 	if (query != categorySearchEdit_->text().trimmed())
 		return;
+	lastAnsweredQuery_ = query;
 
 	QStringList names;
 	categorySuggestionIds_.clear();
@@ -1707,6 +1734,11 @@ void CategoryDock::onCategorySuggestions(const QString &query, const QVector<twi
 		names.push_back(match.gameName);
 	}
 	categorySuggestionModel_->setStringList(names);
+	// Enter was pressed before this answer arrived: pick the top suggestion now.
+	if (searchEnter_.onResults(query.toStdWString(), !names.isEmpty())) {
+		applySearchedCategory(names.first());
+		return;
+	}
 	if (!names.isEmpty() && categorySearchEdit_->hasFocus())
 		categoryCompleter_->complete(); // Show the new list under the box.
 }
@@ -1723,6 +1755,9 @@ void CategoryDock::applySearchedCategory(const QString &typedOrPicked)
 	const QString id = *idIt;
 
 	categorySearchTimer_->stop();
+	searchEnter_.reset();
+	lastSentQuery_.clear();
+	lastAnsweredQuery_.clear();
 	categorySearchEdit_->clear();
 	// The completer writes the picked text back into the box after
 	// activated() returns; clear once more after it has.

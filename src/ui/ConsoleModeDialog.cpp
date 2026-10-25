@@ -95,7 +95,7 @@ qint64 ConsoleModeDialog::nowMs() const
 
 void ConsoleModeDialog::presentAndFocus()
 {
-	pendingEnter_ = false;
+	enter_.reset();
 	answeredQuery_.clear();
 	edit_->clear();
 	showRecents();
@@ -152,7 +152,7 @@ void ConsoleModeDialog::showRecents()
 
 void ConsoleModeDialog::onTextChanged()
 {
-	pendingEnter_ = false;
+	enter_.reset();
 	const QString text = edit_->text();
 	debounce_.onTextChanged(text.toStdWString(), nowMs());
 	if (debounce_.armed()) {
@@ -195,12 +195,10 @@ void ConsoleModeDialog::setResults(const QString &query, const QVector<twitch::C
 	if (list_->count() > 0) {
 		list_->setCurrentRow(0);
 		setStatus(QStringLiteral("Up/Down to choose, Enter to set."));
-		if (pendingEnter_) {
-			pendingEnter_ = false;
+		if (enter_.onResults(query.toStdWString(), true))
 			pickCurrentRow();
-		}
 	} else {
-		pendingEnter_ = false;
+		enter_.reset();
 		setStatus(QStringLiteral("No categories match \"%1\".").arg(query));
 	}
 }
@@ -209,7 +207,7 @@ void ConsoleModeDialog::setSearchFailed(const QString &query, const QString &rea
 {
 	if (query != edit_->text().trimmed())
 		return;
-	pendingEnter_ = false;
+	enter_.reset();
 	list_->clear();
 	setStatus(reason.isEmpty() ? QStringLiteral("Couldn't search Twitch just now.") : reason);
 }
@@ -242,15 +240,16 @@ bool ConsoleModeDialog::eventFilter(QObject *watched, QEvent *event)
 				pickCurrentRow(); // A quick pick.
 			} else if (typed == answeredQuery_) {
 				pickCurrentRow();
-			} else if (const auto flushed = debounce_.flush()) {
-				// Typed and pressed Enter before the search went out: send it
-				// now and pick the top match when it lands.
-				debounceTimer_->stop();
-				pendingEnter_ = true;
-				setStatus(QStringLiteral("Searching..."));
-				emit queryRequested(QString::fromStdWString(*flushed));
 			} else {
-				pendingEnter_ = true; // Already searching; pick when it lands.
+				// Typed and pressed Enter before the answer is back: send the search now if
+				// it has not gone out yet, and pick the top match when it lands.
+				const auto flushed = debounce_.flush();
+				if (flushed)
+					debounceTimer_->stop();
+				if (enter_.onEnter(typed.toStdWString(), flushed.has_value())) {
+					setStatus(QStringLiteral("Searching..."));
+					emit queryRequested(QString::fromStdWString(*flushed));
+				}
 			}
 			return true;
 		}

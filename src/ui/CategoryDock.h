@@ -125,7 +125,6 @@ class QGroupBox;
 class QLabel;
 class QLineEdit;
 class QStringListModel;
-class QListWidget;
 class QPushButton;
 class QScrollArea;
 class QTimer;
@@ -139,6 +138,8 @@ class TwitchChannelClient;
 }
 
 namespace signalbox::ui {
+
+class ActivityLogView;
 
 class PromptWidget;
 class PromptToast;
@@ -362,6 +363,7 @@ private:
 	// asks Twitch for matching categories; the answer fills the completer.
 	// Choosing one applies it. See CategoryDock.cpp for the stale-result rule.
 	void onCategorySearchTextChanged();
+	void onCategorySearchEnter(); // Enter in the search box - see core::EnterBeforeResults.
 	void runCategorySearch();
 	void onCategorySuggestions(const QString &query, const QVector<twitch::CategoryMatch> &matches);
 	void applySearchedCategory(const QString &typedOrPicked);
@@ -506,6 +508,9 @@ private:
 	QCompleter *categoryCompleter_ = nullptr;
 	QStringListModel *categorySuggestionModel_ = nullptr; // Names from the last matching search.
 	QTimer *categorySearchTimer_ = nullptr;               // Single-shot debounce; idle unless typing.
+	core::EnterBeforeResults searchEnter_;                // Enter pressed before Twitch answered.
+	QString lastSentQuery_;                               // The text last sent to Twitch from this box.
+	QString lastAnsweredQuery_;                           // The text Twitch last answered.
 	QHash<QString, QString> categorySuggestionIds_;       // Lower-cased name -> Twitch category id.
 	QHash<QString, QString> categorySuggestionNames_;     // Lower-cased name -> name as Twitch spells it.
 	QLabel *playingElsewhereBanner_ = nullptr;            // Visible only while the hold is on.
@@ -520,7 +525,7 @@ private:
 	PromptWidget *promptWidget_ = nullptr;
 	std::unique_ptr<PromptToast> toast_; // Parentless always-on-top card - see PromptToast.h.
 	bool liveCheckInFlight_ = false;     // One scheduled verification read at a time.
-	QListWidget *activityLogView_ = nullptr;
+	ActivityLogView *activityLogView_ = nullptr;
 
 	QLabel *twitchStatusLabel_ = nullptr;
 	QLabel *deviceCodeLabel_ = nullptr;

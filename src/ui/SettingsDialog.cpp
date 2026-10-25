@@ -174,6 +174,7 @@ void SettingsDialog::buildUi()
 
 	root->addWidget(timingGroup);
 
+#ifdef SIGNALBOX_CAPTURE_RECOVERY_UI
 	// --- Capture card recovery ---
 	auto *captureGroup = new QGroupBox(QStringLiteral("Capture card recovery"), this);
 	auto *captureLayout = new QVBoxLayout(captureGroup);
@@ -245,6 +246,7 @@ void SettingsDialog::buildUi()
 	captureLayout->addWidget(restartButton);
 
 	root->addWidget(captureGroup);
+#endif
 
 	// --- Per-game overrides (view-and-remove only - see class doc comment) ---
 	auto *overridesGroup = new QGroupBox(QStringLiteral("Per-game overrides"), this);
@@ -328,10 +330,12 @@ void SettingsDialog::onSaveClicked()
 		config_.removeUserOverride(key);
 	pendingOverrideRemovals_.clear();
 
+#ifdef SIGNALBOX_CAPTURE_RECOVERY_UI
 	config_.setCaptureRecoverySource(captureSourceCombo_->currentData().toString().toStdWString());
 	config_.setCaptureRecoveryAuto(captureAutoCheckbox_->isChecked());
 	config_.setCaptureRecoveryBlackSeconds(captureBlackSecondsSpin_->value());
 	config_.setCaptureRecoveryResetCommand(captureResetCommandEdit_->text().trimmed().toStdWString());
+#endif
 
 	core::TimingConstants timing = config_.timing();
 	timing.confirmPolls = static_cast<std::uint32_t>(confirmPollsSpin_->value());

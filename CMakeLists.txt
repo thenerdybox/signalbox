@@ -12,6 +12,9 @@ project(${_name} VERSION ${_version})
 
 option(ENABLE_FRONTEND_API "Use obs-frontend-api for UI functionality" ON)
 option(ENABLE_QT "Use Qt functionality" ON)
+# Capture card recovery (Settings section + "Restart capture card" hotkey) is
+# built but dormant. Turn it on only when it is wanted again.
+option(SIGNALBOX_CAPTURE_RECOVERY_UI "Show capture card recovery in Settings and register its hotkey" OFF)
 
 include(compilerconfig)
 include(defaults)
@@ -130,6 +133,10 @@ target_sources(
     src/core/DetectionFilter.h
     src/ui/DockLayout.h
 )
+
+if(SIGNALBOX_CAPTURE_RECOVERY_UI)
+  target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE SIGNALBOX_CAPTURE_RECOVERY_UI=1)
+endif()
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})
 

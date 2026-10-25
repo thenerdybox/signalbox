@@ -82,7 +82,7 @@ private:
 	QElapsedTimer clock_;
 	QStringList recents_;
 	QString answeredQuery_;     // The query the list currently shows results for.
-	bool pendingEnter_ = false; // Enter pressed while results were stale: pick when they land.
+	core::EnterBeforeResults enter_; // Enter pressed while results were stale: pick when they land.
 };
 
 } // namespace signalbox::ui

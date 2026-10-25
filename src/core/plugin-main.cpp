@@ -317,7 +317,11 @@ bool obs_module_load(void)
 
 	// Capture card recovery: lives for the whole session (owned by the dock,
 	// which OBS destroys with the main window).
+#ifdef SIGNALBOX_CAPTURE_RECOVERY_UI
+	// Dormant in this release: no Settings section and no hotkey unless the
+	// build is configured with -DSIGNALBOX_CAPTURE_RECOVERY_UI=ON.
 	g_captureRecovery = new signalbox::core::CaptureRecovery(*g_config, g_dock);
+#endif
 
 	obs_frontend_add_event_callback(&LiveStateTrampoline, nullptr);
 

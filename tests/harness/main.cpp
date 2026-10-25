@@ -1881,7 +1881,7 @@ void RunShippedDataFileScenarios()
 	// detectable, just prompt-only. Excluding one would silently delete
 	// the entire Trigger C feature for that app.
 	Check(!denylist.indexExclusions.excludes(photoshop), "Photoshop is NOT excluded - it is prompt-only, not ignored");
-	Check(!denylist.indexExclusions.excludes(vscode), "VS Code is NOT excluded either");
+	Check(denylist.indexExclusions.excludes(vscode), "VS Code is a developer tool and never a game (excluded)");
 
 	Check(denylist.shouldIgnoreProcess(L"", L"chrome.exe"), "browsers are rejected by process basename");
 	Check(denylist.shouldIgnoreProcess(L"", L"opera_gx.exe"), "including Opera GX");
@@ -2927,6 +2927,34 @@ void RunConsoleModeScenarios()
 		      "Enter before the delay sends the text right away, once");
 	}
 
+	// --- Enter before the results are back: the one rule shared by the popup and the dock's search box. ---
+	{
+		std::printf("-- Enter before results (shared by both search boxes) --\n");
+		using signalbox::core::EnterBeforeResults;
+		EnterBeforeResults e;
+		Check(e.onEnter(L"zelda", /*needSearch=*/true), "Enter before the search went out asks for it to be sent now");
+		Check(e.waiting(), "and remembers that Enter was pressed");
+		Check(!e.onResults(L"zel", true) && e.waiting(), "an answer to older text is ignored and the wait continues");
+		Check(e.onResults(L"zelda", true) && !e.waiting(), "the answer for the typed text picks the top suggestion, once");
+		Check(!e.onResults(L"zelda", true), "a repeat of the answer picks nothing again");
+
+		EnterBeforeResults inFlight;
+		Check(!inFlight.onEnter(L"mario", /*needSearch=*/false), "Enter while the search is already out sends nothing new");
+		Check(inFlight.onResults(L" mario ", true), "and picks when it lands (spaces do not matter)");
+
+		EnterBeforeResults none;
+		none.onEnter(L"qqqq", true);
+		Check(!none.onResults(L"qqqq", false) && !none.waiting(), "an empty answer ends the wait without picking anything");
+
+		EnterBeforeResults typedOn;
+		typedOn.onEnter(L"zel", true);
+		typedOn.reset(); // The text changed again.
+		Check(!typedOn.onResults(L"zel", true), "typing again cancels a waiting Enter");
+
+		EnterBeforeResults idle;
+		Check(!idle.onResults(L"zelda", true), "results nobody pressed Enter for are never auto-picked");
+	}
+
 	// --- Picking a result calls the real set-category path with the right id and name. ---
 	{
 		std::printf("-- Pick -> existing set-category path --\n");
@@ -3052,6 +3080,41 @@ void RunUtilityExclusionScenarios()
 		{L"Wallpaper Engine", L"wallpaper64.exe"},
 		{L"Discord", L"Discord.exe"},
 		{L"OBS Studio", L"obs64.exe"},
+		// Developer tools, terminals, editors, browsers, office, file managers, chat/music/AI apps.
+		{L"Visual Studio Code", L"Code.exe"},
+		{L"Microsoft Visual Studio Community 2022", L"devenv.exe"},
+		{L"JetBrains IntelliJ IDEA 2026.1", L"idea64.exe"},
+		{L"PyCharm Community Edition 2026.1", L"pycharm64.exe"},
+		{L"WebStorm 2026.1", L"webstorm64.exe"},
+		{L"JetBrains Rider 2026.1", L"rider64.exe"},
+		{L"CLion 2026.1", L"clion64.exe"},
+		{L"GoLand 2026.1", L"goland64.exe"},
+		{L"Android Studio", L"studio64.exe"},
+		{L"Windows Terminal", L"WindowsTerminal.exe"},
+		{L"PowerShell 7-x64", L"pwsh.exe"},
+		{L"Windows PowerShell", L"powershell.exe"},
+		{L"Command Prompt", L"cmd.exe"},
+		{L"Notepad", L"notepad.exe"},
+		{L"Notepad++ (64-bit x64)", L"notepad++.exe"},
+		{L"Google Chrome", L"chrome.exe"},
+		{L"Microsoft Edge", L"msedge.exe"},
+		{L"Mozilla Firefox", L"firefox.exe"},
+		{L"Opera GX Stable 134.0.5954.44", L"opera.exe"},
+		{L"Brave", L"brave.exe"},
+		{L"Microsoft Word", L"WINWORD.EXE"},
+		{L"Microsoft Excel", L"EXCEL.EXE"},
+		{L"Microsoft PowerPoint", L"POWERPNT.EXE"},
+		{L"Microsoft Outlook", L"OUTLOOK.EXE"},
+		{L"Explorer++", L"Explorer++.exe"},
+		{L"Directory Opus", L"dopus.exe"},
+		{L"Total Commander 11", L"TOTALCMD64.EXE"},
+		{L"Claude", L"claude.exe"},
+		{L"Microsoft Teams", L"ms-teams.exe"},
+		{L"Slack", L"slack.exe"},
+		{L"Spotify", L"Spotify.exe"},
+		{L"Steam", L"steamwebhelper.exe"},
+		{L"Steam", L"steamservice.exe"},
+		{L"Steam", L"gameoverlayui.exe"},
 	};
 	for (const Utility &u : utilities) {
 		const InstalledGame game = MakeGame(u.displayName, Platform::Generic, L"x");
@@ -3062,11 +3125,14 @@ void RunUtilityExclusionScenarios()
 		Check(fallback.shouldIgnoreProcess(L"", u.exe), (label + ": process rejected by name (fallback)").c_str());
 	}
 	// Exclusions must not eat real games.
-	for (const wchar_t *name : {L"Marvel Rivals", L"Dead by Daylight", L"Elden Ring", L"Cyberpunk 2077"}) {
+	for (const wchar_t *name : {L"Marvel Rivals", L"Dead by Daylight", L"Elden Ring", L"Cyberpunk 2077", L"Riders Republic",
+				   L"Code Vein", L"Terminal Velocity", L"Notepad Quest", L"Files of the Dead"}) {
 		Check(!shipped.indexExclusions.excludes(MakeGame(name, Platform::Steam, L"1")),
 		      (std::string("a real game is still detectable: ") + Narrow(name)).c_str());
 	}
 	Check(!shipped.shouldIgnoreProcess(L"", L"MarvelRivals-Win64-Shipping.exe"), "a game process is not rejected");
+	Check(!shipped.shouldIgnoreProcess(L"", L"CodeVein-Win64-Shipping.exe"), "Code Vein's process is not mistaken for Code.exe");
+	Check(!fallback.shouldIgnoreProcess(L"", L"CodeVein-Win64-Shipping.exe"), "and not in the built-in fallback either");
 	// Launchers (the cherry-picked store-launcher commit) go through the same lists.
 	Check(shipped.indexExclusions.excludes(MakeGame(L"GOG Galaxy", Platform::Generic, L"x")), "GOG Galaxy is excluded");
 

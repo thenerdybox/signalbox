@@ -24,27 +24,38 @@ patch-notes page are both generated from it.
 ### Fixed
 
 - **Dock buttons no longer get cut off.** Buttons like "Stream Ending/Stop
-  Detection" and "Just Chatting" used to hide part of themselves, or get
-  covered, when the dock was narrow or had just opened. Now they wrap their text
-  to fit whatever size you make the dock, the buttons that shared a row stack
-  onto the next row when there is no room, and a short dock scrolls so nothing
-  is ever hidden.
-- **Activity log has a horizontal scroll bar.** Long lines stay on one line
-  instead of wrapping, and you can scroll sideways to read them. It still
-  scrolls down to the newest entry on its own.
-- **Monitor and hardware software is never treated as a game.** Dell Display
-  and Peripheral Manager kept showing up as the detected game. Dell, NZXT CAM,
-  Corsair iCUE, Razer Synapse, Logitech G HUB, ASUS Armoury Crate, MSI
-  Afterburner, SteelSeries GG, Elgato apps, Stream Deck, Wallpaper Engine,
-  Discord, OBS and similar are now skipped completely. The list is in
-  data/helpers.json if you want to add one.
+  Detection" and "Just Chatting" used to hide part of themselves when the dock
+  was narrow or had just opened. They now wrap their text to fit whatever size
+  you make the dock, and a short dock scrolls instead of hiding things.
+- **The activity log wraps its text again, and no longer overlaps itself.** Long
+  entries wrap to the width of the dock (no sideways scroll bar), every entry
+  gets the height it needs so nothing is drawn on top of its neighbour, and the
+  Undo button always sits beside its entry where you can see it. It still jumps
+  to the newest entry on its own.
+- **Check for updates, Rescan and Settings stay put.** They are pinned to the
+  bottom of the dock now and never scroll away. Only the middle of the dock
+  scrolls when it is short.
+- **"Search Twitch categories" in the dock now waits for you.** Type fast and
+  press Enter, and it waits for Twitch's suggestions and picks the top one, the
+  same as the Console mode box.
+- **Programs that are not games are never treated as games.** Dell Display and
+  Peripheral Manager, NZXT CAM, iCUE, Razer, G HUB, Armoury Crate, Elgato apps
+  and similar used to show up as the detected game. So did Visual Studio Code.
+  Now these are skipped: code editors (VS Code, Visual Studio, the JetBrains
+  ones), terminals, Notepad, browsers, Office, file managers, Teams, Slack,
+  Spotify, Claude and the Steam client's helper programs, along with the
+  hardware software. If you stream coding, set the category by hand or use
+  Console mode. The list is in data/helpers.json if you want to change it.
   Store launchers (GOG Galaxy, Steam, EA app, Ubisoft Connect, Battle.net and
   others) are skipped the same way, so SignalBox stops asking about them.
 - **"Never switch for this app" now means it.** An app you told SignalBox to
   leave alone is no longer shown as the detected game in the dock, so you see
   what is really going on.
+- **Rescan explains itself.** Hovering over it now says what it does.
 
 ## [0.2.10] — 2026-10-21
+
+_Capture card recovery was switched off again in the build that followed; it is not shown in Settings for now._
 
 ### Added
 

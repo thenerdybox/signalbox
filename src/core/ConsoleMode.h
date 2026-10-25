@@ -92,6 +92,43 @@ private:
 	bool armed_ = false;
 };
 
+// --- Enter before the results are back ------------------------------------
+// Shared by every category search box (Console mode's popup and the dock's
+// "Search Twitch categories" field), so they cannot drift apart. Typing fast
+// and pressing Enter must not be a dead key: remember that Enter was pressed,
+// make sure a search for that text is on its way, and pick the top suggestion
+// when the answer for exactly that text lands.
+class EnterBeforeResults {
+public:
+	// Enter was pressed on `query` and Twitch has not answered it yet.
+	// `needSearch` is true when no search for that text has been sent.
+	// Returns true when the caller must send one now.
+	bool onEnter(const std::wstring &query, bool needSearch)
+	{
+		waiting_ = true;
+		query_ = SearchDebounce::Trim(query);
+		return needSearch;
+	}
+
+	// An answer arrived for `answered`. Returns true when the caller should
+	// pick the top suggestion now. An answer to some other text is ignored;
+	// an empty answer to the awaited text ends the wait without a pick.
+	bool onResults(const std::wstring &answered, bool anyResults)
+	{
+		if (!waiting_ || SearchDebounce::Trim(answered) != query_)
+			return false;
+		waiting_ = false;
+		return anyResults;
+	}
+
+	bool waiting() const { return waiting_; }
+	void reset() { waiting_ = false; }
+
+private:
+	bool waiting_ = false;
+	std::wstring query_;
+};
+
 // --- The mode itself --------------------------------------------------------
 struct ConsoleModeHooks {
 	std::function<void(bool paused)> setDetectionPaused; // Stops/starts the process scanner.
