@@ -53,27 +53,6 @@ patch-notes page are both generated from it.
   what is really going on.
 - **Rescan explains itself.** Hovering over it now says what it does.
 
-## [0.2.10] — 2026-10-21
-
-_Capture card recovery was switched off again in the build that followed; it is not shown in Settings for now._
-
-### Added
-
-- **Capture card recovery.** A new section in Settings for capture cards that
-  lose their picture when the HDMI signal drops and stay black until you
-  switch the source off and on again. Pick your Video Capture Device source
-  and tick "Auto-recover when the picture goes black": if it shows no picture
-  for a few seconds (5 by default), SignalBox restarts it for you, the same
-  as Deactivate/Activate in its Properties. It tries up to three times, then
-  waits a minute before trying again, and stops as soon as the picture is
-  back. Off by default.
-- **Restart capture card now**, as a button in Settings and as an OBS hotkey
-  named "SignalBox: Restart capture card" (Settings > Hotkeys), so a Stream
-  Deck key or any keybind can trigger it.
-- **Optional hardware reset command.** Point it at a program or shortcut that
-  resets your capture card (for example a script that restarts its USB
-  device); it runs just before the source is restarted.
-
 ## [0.2.9] — 2026-10-16
 
 ### Fixed
