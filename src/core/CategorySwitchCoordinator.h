@@ -265,9 +265,11 @@ public:
 	void applyFallback(const std::wstring &fallbackCategoryName, bool live, CompletionCallback onComplete = nullptr);
 
 	// Same sequence as applyFallback() for ANY category the user picked by
-	// name (the dock's recent-category choices). Identical resolve -> guard
-	// -> PATCH -> feedback path; only the log wording differs, so a failure
-	// names the category the user chose instead of "the fallback category".
+	// name (the dock's recent-category choices). Identical resolve -> PATCH
+	// -> feedback path; only the log wording differs, so a failure names the
+	// category the user chose instead of "the fallback category". Like
+	// applyFallback() and applyCategoryById(), it skips the external-writer
+	// guard: the guard is for automatic switching, never the user's own pick.
 	void applyCategoryByName(const std::wstring &categoryName, bool live, CompletionCallback onComplete = nullptr);
 
 	// Same sequence for a category the user picked from a Twitch search
@@ -289,9 +291,11 @@ private:
 	// comment's "TIER-2" note. The one and only place that decides "is
 	// this id usable" before anything reaches performGuardedPatch().
 	void applyResolvedCategory(const ResolvedCategory &resolved, bool live, CompletionCallback onComplete,
-				    bool reassert = false);
+				    bool skipGuard = false);
+	// skipGuard: true for a re-assert and for every category the user
+	// picked; only automatic switching is checked against the channel.
 	void performGuardedPatch(const std::wstring &categoryId, const std::wstring &categoryName, bool live,
-				  CompletionCallback onComplete, bool reassert = false);
+				  CompletionCallback onComplete, bool skipGuard = false);
 	void issuePatch(const std::wstring &categoryId, const std::wstring &categoryName, bool live,
 			 CompletionCallback onComplete);
 	void maybeCreateMarker(const std::wstring &categoryName);

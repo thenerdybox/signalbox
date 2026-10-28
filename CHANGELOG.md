@@ -5,6 +5,19 @@ Changelog](https://keepachangelog.com/en/1.1.0/) format. This file is the
 single source of truth for release notes — GitHub Releases and the public
 patch-notes page are both generated from it.
 
+## [0.2.12] — 2026-10-28
+
+### Fixed
+
+- **Setting the category yourself from SignalBox works again after an edit on
+  Twitch's own site.** If you'd changed the category on Twitch (or somewhere
+  else outside SignalBox), every category you then picked in SignalBox, from
+  your recent games, the search box or Console mode, was refused. The dock said
+  "Category was changed outside SignalBox — automation paused", and the
+  category you were trying to replace stayed put. Anything you pick in
+  SignalBox is now always set. Automatic switching still backs off when
+  someone changes the category outside SignalBox, same as before.
+
 ## [0.2.11] — 2026-10-24
 
 ### Added

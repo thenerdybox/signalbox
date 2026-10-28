@@ -2281,6 +2281,58 @@ void RunLiveVerificationScenarios()
 		Check(CountCallsStartingWith(channelClient.callLog, "getChannelInfo") == 1,
 		      "the ordinary switch-in still runs the guard");
 	}
+	{
+		std::printf("-- A category the user picks is set even after an edit on Twitch's own site --\n");
+		// The live report: set the category on Twitch's site to something
+		// wrong, then pick the right game in the dock (recent games, search,
+		// Console mode). The guard refused every pick and paused automation.
+		FakeOverrideStore overrides;
+		FakeCategoryLookup lookup;
+		lookup.seedExact(L"Game A", ResolvedCategory{L"111", L"Game A"});
+		lookup.seedExact(L"Pokemon UNITE", ResolvedCategory{L"222", L"Pokemon UNITE"});
+		lookup.seedExact(L"Just Chatting", ResolvedCategory{L"509658", L"Just Chatting"});
+		CategoryResolver resolver(overrides, &lookup);
+		std::vector<std::wstring> activity;
+		int externalWriterCalls = 0;
+		CategorySwitchCoordinator coordinator(
+			resolver, [&](const std::wstring &m) { activity.push_back(m); }, [&]() { ++externalWriterCalls; });
+		FakeChannelClient channelClient;
+		channelClient.channelInfoToReturn = ChannelSnapshot{L"", L""};
+		coordinator.setChannelClient(&channelClient);
+		coordinator.setCategoryLookup(&lookup);
+
+		const InstalledGame gameA = MakeGame(L"Game A", Platform::Steam, L"1");
+		coordinator.switchIn(gameA, /*live=*/true); // lastApplied = 111.
+		channelClient.channelInfoToReturn = ChannelSnapshot{L"777", L"Metroid Prime"}; // Edited on Twitch.
+
+		channelClient.callLog.clear();
+		coordinator.applyCategoryByName(L"Pokemon UNITE", /*live=*/true);
+		Check(CountCallsStartingWith(channelClient.callLog, "setChannelCategory:222") == 1,
+		      "a recent-game pick PATCHes over the Twitch-site edit");
+		Check(externalWriterCalls == 0, "and does not pause automation");
+
+		channelClient.channelInfoToReturn = ChannelSnapshot{L"777", L"Metroid Prime"};
+		channelClient.callLog.clear();
+		coordinator.applyCategoryById(L"333", L"Some Searched Game", /*live=*/true);
+		Check(CountCallsStartingWith(channelClient.callLog, "setChannelCategory:333") == 1,
+		      "a search-box / Console mode pick PATCHes over it too");
+		Check(externalWriterCalls == 0, "still no pause");
+
+		channelClient.channelInfoToReturn = ChannelSnapshot{L"777", L"Metroid Prime"};
+		channelClient.callLog.clear();
+		coordinator.applyFallback(L"Just Chatting", /*live=*/true);
+		Check(CountCallsStartingWith(channelClient.callLog, "setChannelCategory:509658") == 1,
+		      "Just Chatting / Undo PATCH over it as well");
+		Check(externalWriterCalls == 0, "and none of the user's picks ever paused automation");
+
+		// Automatic switching keeps the guard: a real outside edit still wins.
+		channelClient.channelInfoToReturn = ChannelSnapshot{L"777", L"Metroid Prime"};
+		channelClient.callLog.clear();
+		coordinator.switchIn(gameA, /*live=*/true);
+		Check(CountCallsStartingWith(channelClient.callLog, "setChannelCategory") == 0,
+		      "an automatic switch still stands down after an outside edit");
+		Check(externalWriterCalls == 1, "and still pauses automation");
+	}
 }
 
 void RunNoGameWhileLiveScenarios()

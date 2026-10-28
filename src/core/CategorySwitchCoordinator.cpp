@@ -86,7 +86,9 @@ void CategorySwitchCoordinator::applyCategoryById(const std::wstring &categoryId
 		applyCategoryByName(categoryName, live, std::move(onComplete));
 		return;
 	}
-	applyResolvedCategory(ResolvedCategory{categoryId, categoryName}, live, std::move(onComplete));
+	// A category the user picked is never refused by the external-writer
+	// guard - see applyNamedCategory().
+	applyResolvedCategory(ResolvedCategory{categoryId, categoryName}, live, std::move(onComplete), /*skipGuard=*/true);
 }
 
 void CategorySwitchCoordinator::applyNamedCategory(const std::wstring &categoryName, bool live,
@@ -96,6 +98,14 @@ void CategorySwitchCoordinator::applyNamedCategory(const std::wstring &categoryN
 	// failure is worded: a user who picked "Hades II" from the recent list
 	// should not be told the "fallback category" couldn't be switched.
 	const std::wstring what = isFallback ? std::wstring(L"the fallback category") : L"\"" + categoryName + L"\"";
+
+	// Every caller of this path is the user telling SignalBox what to set:
+	// a recent game, Console mode, Just Chatting, Undo, or a prompt answer.
+	// The external-writer guard exists so AUTOMATIC switching backs off a
+	// human's manual change. Applied here it did the opposite: change the
+	// category on Twitch's site, then pick the right game in the dock, and
+	// the guard saw the Twitch edit, refused the user's own pick, and paused
+	// automation, leaving the category SignalBox was asked to replace.
 
 	if (!channelClient_) {
 		log(L"Twitch is not connected - couldn't switch to " + what);
@@ -129,15 +139,15 @@ void CategorySwitchCoordinator::applyNamedCategory(const std::wstring &categoryN
 				}
 				return;
 			}
-			applyResolvedCategory(*resolved, live, onComplete);
+			applyResolvedCategory(*resolved, live, onComplete, /*skipGuard=*/true);
 		});
 }
 
 void CategorySwitchCoordinator::applyResolvedCategory(const ResolvedCategory &resolved, bool live,
-							CompletionCallback onComplete, bool reassert)
+							CompletionCallback onComplete, bool skipGuard)
 {
 	if (!resolved.categoryId.empty()) {
-		performGuardedPatch(resolved.categoryId, resolved.categoryName, live, onComplete, reassert);
+		performGuardedPatch(resolved.categoryId, resolved.categoryName, live, onComplete, skipGuard);
 		return;
 	}
 
@@ -162,7 +172,7 @@ void CategorySwitchCoordinator::applyResolvedCategory(const ResolvedCategory &re
 	}
 
 	const std::wstring categoryName = resolved.categoryName;
-	categoryLookup_->findExact(categoryName, [this, categoryName, live, onComplete, reassert](std::optional<ResolvedCategory> exact) {
+	categoryLookup_->findExact(categoryName, [this, categoryName, live, onComplete, skipGuard](std::optional<ResolvedCategory> exact) {
 		if (!exact || exact->categoryId.empty()) {
 			// Still no id - resolve to nothing and let the UI ask,
 			// never PATCH. Same "unmapped" outcome as any other
@@ -173,12 +183,12 @@ void CategorySwitchCoordinator::applyResolvedCategory(const ResolvedCategory &re
 			}
 			return;
 		}
-		performGuardedPatch(exact->categoryId, exact->categoryName, live, onComplete, reassert);
+		performGuardedPatch(exact->categoryId, exact->categoryName, live, onComplete, skipGuard);
 	});
 }
 
 void CategorySwitchCoordinator::performGuardedPatch(const std::wstring &categoryId, const std::wstring &categoryName,
-						      bool live, CompletionCallback onComplete, bool reassert)
+						      bool live, CompletionCallback onComplete, bool skipGuard)
 {
 	if (!channelClient_) {
 		if (onComplete) {
@@ -194,10 +204,11 @@ void CategorySwitchCoordinator::performGuardedPatch(const std::wstring &category
 		return;
 	}
 
-	// A re-assert comes from the live-category verification, which has just
-	// read the channel itself - skip the redundant GET and the stand-down
-	// it would trigger (see switchIn()'s doc comment).
-	if (reassert) {
+	// Skipped for a re-assert, which comes from the live-category
+	// verification that has just read the channel itself (see switchIn()'s
+	// doc comment), and for any category the user picked (see
+	// applyNamedCategory()).
+	if (skipGuard) {
 		issuePatch(categoryId, categoryName, live, onComplete);
 		return;
 	}
